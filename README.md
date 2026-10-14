@@ -28,7 +28,7 @@ BASE_PATH=/smolov-sbd/ npm run preview -- --port 4173
 TEST_BASE_PATH=/smolov-sbd/ npm run e2e
 ```
 
-The `dist` output can also be served by a static HTTPS host; localhost is permitted for development. Do not use Sites publishing for this frontend. The earlier Sites URL is retained only for recovering any browser-local records created there. Export its JSON backup, then open the GitHub Pages tracker, pair the same Powerlevel code if previously paired, and import the backup. Cross-origin local data cannot move automatically. Backups exclude connection codes.
+The `dist` output can also be served by a static HTTPS host; localhost is permitted for development. Do not use Sites publishing for this frontend. The [earlier address](https://smolov-sbd.micak27.chatgpt.site/) now serves only a read-only recovery page for any browser-local records created there. Export its JSON backup, then open the GitHub Pages tracker, pair the same Powerlevel code if previously paired, and import the backup. Cross-origin local data cannot move automatically. Backups exclude connection codes.
 
 Keep a dedicated subpath/origin: the manifest, app assets and service-worker scope use the configured base. This service worker precaches only the app shell/assets, not authenticated API responses or connection credentials. An update waits for user action and is disabled while a workout is active or a local save is pending.
 
