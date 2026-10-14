@@ -43,7 +43,7 @@ export function writerLockMessage(status: WriterLockStatus): string {
 /** Never steals ownership; closing the owning tab releases its browser-managed lock. */
 export function requestWriterLease(
   onStatus: (status: WriterLockStatus) => void,
-  manager = browserLocks(),
+  manager: LockManagerPort | null = browserLocks() ?? null,
 ): WriterLease {
   let canceled = false;
   let releaseHold!: () => void;

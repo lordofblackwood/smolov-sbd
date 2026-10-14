@@ -46,7 +46,7 @@ describe('one local writer across tracker tabs', () => {
 
   it('stays nonwritable if browser coordination is unavailable or rejected', async () => {
     const unsupportedStates: WriterLockStatus[] = [];
-    const unsupported = requestWriterLease(status => unsupportedStates.push(status), undefined);
+    const unsupported = requestWriterLease(status => unsupportedStates.push(status), null);
     await unsupported.closed;
     expect(unsupportedStates.at(-1)).toBe('unsupported');
     const rejectedStates: WriterLockStatus[] = [];
