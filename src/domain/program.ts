@@ -301,15 +301,28 @@ export const ORIGINAL_PROGRAM_DAYS: readonly ProgramDay[] = Object.freeze([
   day(MEET_DATE, "meet"),
 ]);
 
-/** User-requested revision: bench follows light deadlifts, heavy squat is alone. */
-const revisedVolumeDays = new Map(
+/** User-requested Friday calibration and revised volume-day pairings. */
+const revisedProgramDays = new Map(
   [
+    day(
+      "2026-10-14",
+      "calibration",
+      [],
+      "Recovery — calibration tests on Friday, Oct 16",
+    ),
+    day("2026-10-16", "calibration", [
+      calibration("squat"),
+      calibration("bench"),
+      calibration("deadlift"),
+    ]),
     ...volumeWeek("2026-10-19", "volume-1", true),
     ...volumeWeek("2026-10-26", "volume-2", true),
   ].map((item) => [item.date, item]),
 );
 export const PROGRAM_DAYS: readonly ProgramDay[] = Object.freeze(
-  ORIGINAL_PROGRAM_DAYS.map((item) => revisedVolumeDays.get(item.date) ?? item),
+  ORIGINAL_PROGRAM_DAYS.map(
+    (item) => revisedProgramDays.get(item.date) ?? item,
+  ),
 );
 
 function prescriptionSignature(targets: readonly SetTarget[]): string {
@@ -328,23 +341,27 @@ function prescriptionSignature(targets: readonly SetTarget[]): string {
   );
 }
 
-/** Keep an already-started volume week together; moved work must not be duplicated. */
+/** Retain started original phases; moved tests or working sets must not repeat. */
 export function programDaysForWorkouts(
   workouts: readonly Workout[],
 ): readonly ProgramDay[] {
-  const originalWeeks = new Set<Phase>();
+  const originalPhases = new Set<Phase>();
   for (const workout of workouts) {
     const revised = PROGRAM_DAYS.find((item) => item.date === workout.date);
-    if (!revised || !["volume-1", "volume-2"].includes(revised.phase)) continue;
+    if (
+      !revised ||
+      !["calibration", "volume-1", "volume-2"].includes(revised.phase)
+    )
+      continue;
     if (
       prescriptionSignature(workout.targets) !==
       prescriptionSignature(createTargets(revised, DEFAULT_SETTINGS))
     ) {
-      originalWeeks.add(revised.phase);
+      originalPhases.add(revised.phase);
     }
   }
   return PROGRAM_DAYS.map((item) =>
-    originalWeeks.has(item.phase)
+    originalPhases.has(item.phase)
       ? ORIGINAL_PROGRAM_DAYS.find((original) => original.date === item.date)!
       : item,
   );

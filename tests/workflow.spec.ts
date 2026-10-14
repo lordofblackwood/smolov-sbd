@@ -142,7 +142,7 @@ test('both volume weeks put bench after light deadlift and leave heaviest squat 
   await page.goto('./');
   await enterTrainingMaxes(page);
   await navigate(page, 'Program');
-  const revision = page.getByRole('region', { name: 'Volume schedule update', exact: true });
+  const revision = page.getByRole('region', { name: 'Schedule update', exact: true });
   await expect(revision).toBeVisible();
   await revision.getByText('Preview 10 future changed days', { exact: true }).click();
   await expect(revision.locator('.schedule-changes > div')).toHaveCount(10);
@@ -436,13 +436,62 @@ test('backup preference restore previews future targets and preserves the active
   expect((await readState(page))?.settings.unit).toBe('kg');
 });
 
-test('calibration screens stay unfilled and fit 430 and 360 pixel phones', async ({ page }, info) => {
+test('Friday calibration starts together and an original calibration backup keeps its dates', async ({ page }, info) => {
+  const calibrationDate = new Date('2026-10-14T12:00:00.000Z');
+  await page.clock.setFixedTime(calibrationDate);
+  await page.goto('./');
+  await expect(page.getByRole('heading', { name: 'Recovery day', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start workout', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Program phases', { exact: true })).toContainText('Oct 16–18');
+  await navigate(page, 'Program');
+  await page.getByRole('combobox', { name: 'Phase', exact: true }).selectOption('calibration');
+  for (const date of ['Oct 14', 'Oct 15', 'Oct 17', 'Oct 18']) {
+    await expect(page.locator('.calendar-day').filter({ hasText: date }).locator('.day-prescriptions strong')).toHaveCount(0);
+  }
+  const friday = page.locator('.calendar-day').filter({ hasText: 'Oct 16' });
+  await expect(friday.locator('.day-prescriptions strong')).toHaveText(['Squat', 'Bench', 'Deadlift']);
+  await expect(friday.locator('.day-prescriptions > div span')).toHaveText(['1 × 1 · RPE 6–8', '1 × 1 · RPE 6–8', '1 × 1 · RPE 6–8']);
+  await page.getByRole('combobox', { name: 'Phase', exact: true }).selectOption('volume-1');
+  const monday = page.locator('.calendar-day').filter({ hasText: 'Oct 19' });
+  await expect(monday.locator('.day-prescriptions strong')).toHaveText(['Deadlift']);
+  await expect(monday).toContainText('5 × 3');
+
+  const original = startWorkout(ORIGINAL_PROGRAM_DAYS.find(day => day.date === '2026-10-14')!, DEFAULT_SETTINGS, LOCAL_ACCOUNT_ID, calibrationDate);
+  const previousState = createInitialState(DEFAULT_SETTINGS);
+  previousState.workouts = [original];
+  await navigate(page, 'Settings');
+  await page.getByLabel('Import JSON backup', { exact: true }).setInputFiles({
+    name: 'original-calibration.json', mimeType: 'application/json', buffer: Buffer.from(exportBackup(previousState, LOCAL_ACCOUNT_ID, calibrationDate)),
+  });
+  await expect(page.getByText('Imported 1 workouts; 0 duplicates skipped; 0 conflicts kept unchanged.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await readState(page))?.workouts).toEqual([original]);
+  await navigate(page, 'Program');
+  await expect(page.getByText('Calibration already started under the original dates. Remaining calibration days keep that layout to avoid repeat tests. Saved days keep their own targets.', { exact: true })).toBeVisible();
+  await page.getByRole('combobox', { name: 'Phase', exact: true }).selectOption('calibration');
+  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 14' }).locator('.day-prescriptions strong')).toHaveText(['Squat', 'Bench']);
+  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 16' }).locator('.day-prescriptions strong')).toHaveText(['Deadlift']);
+  await navigate(page, 'Today');
+  await expect(page.locator('.lift-row h3')).toHaveText(['Squat', 'Bench']);
+  await page.reload();
+  expect((await readState(page))?.workouts).toEqual([original]);
+  await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
+  await expect(page.getByText('0 of 2 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button')).toHaveCount(2);
+  await expect(page.getByLabel('Squat set 1 actual weight', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('Squat achieved RPE', { exact: true })).toHaveValue('');
+  await noHorizontalOverflow(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-original-calibration-reopened.png`, fullPage: false, animations: 'disabled' });
+});
+
+test('Friday calibration screens stay unfilled and fit 430 and 360 pixel phones', async ({ page }, info) => {
   test.skip(info.project.name !== 'mobile', 'Phone widths are covered by the mobile project.');
-  await page.clock.setFixedTime(new Date('2026-10-14T12:00:00.000Z'));
+  await page.clock.setFixedTime(new Date('2026-10-16T12:00:00.000Z'));
   await page.setViewportSize({ width: 430, height: 932 });
   await page.goto('./');
   await expect(page.getByRole('heading', { name: 'Today’s training', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Start workout', exact: true })).toBeVisible();
+  await expect(page.locator('.lift-row h3')).toHaveText(['Squat', 'Bench', 'Deadlift']);
   await noHorizontalOverflow(page);
   await page.screenshot({ path: '/private/tmp/smolov-sbd-calibration-today.png', fullPage: false, animations: 'disabled' });
   await navigate(page, 'Settings');
@@ -454,11 +503,22 @@ test('calibration screens stay unfilled and fit 430 and 360 pixel phones', async
   await page.getByRole('button', { name: 'Start workout', exact: true }).click();
   await expect(page.getByLabel('Squat set 1 actual weight', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Squat achieved RPE', { exact: true })).toHaveValue('');
-  await expect(page.getByText('0 of 2 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByText('0 of 3 sets logged', { exact: true })).toBeVisible();
   await noHorizontalOverflow(page);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: '/private/tmp/smolov-sbd-calibration-active.png', fullPage: false, animations: 'disabled' });
+  for (const lift of ['Bench', 'Deadlift']) {
+    await page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: new RegExp(lift) }).click();
+    await expect(page.getByLabel(`${lift} set 1 actual weight`, { exact: true })).toHaveValue('');
+    await expect(page.getByLabel(`${lift} achieved RPE`, { exact: true })).toHaveValue('');
+    await expect(page.locator('.target-label').first()).toHaveText('Target RPE 6–8');
+  }
   await expect.poll(async () => (await readState(page))?.workouts.length).toBe(1);
   expect((await readState(page))?.workouts[0].sets).toEqual([]);
+  expect((await readState(page))?.workouts[0].date).toBe('2026-10-16');
+  expect((await readState(page))?.workouts[0].targets.map(target => [target.lift, target.kind, target.weight, target.rpeTarget])).toEqual([
+    ['squat', 'calibration', null, '6–8'], ['bench', 'calibration', null, '6–8'], ['deadlift', 'calibration', null, '6–8'],
+  ]);
   expect((await readState(page))?.settings.trainingMaxes).toEqual({ squat: null, bench: null, deadlift: null });
   await page.setViewportSize({ width: 360, height: 800 });
   await noHorizontalOverflow(page);

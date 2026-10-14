@@ -13,7 +13,7 @@ export const phaseShort = {
   meet: "Meet day",
 };
 export const phases = [
-  { id: "calibration", label: "Calibration", date: "Oct 14–18" },
+  { id: "calibration", label: "Calibration", date: "Oct 16–18" },
   { id: "volume-1", label: "Volume 1", date: "Oct 19–25" },
   { id: "volume-2", label: "Volume 2", date: "Oct 26–Nov 1" },
   { id: "peak", label: "Peak", date: "Nov 2–8" },

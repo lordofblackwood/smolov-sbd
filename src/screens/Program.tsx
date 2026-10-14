@@ -25,10 +25,12 @@ export function Program({
 }) {
   const [phase, setPhase] = useState<string>("all");
   const programDays = programDaysForWorkouts(workouts);
-  const preservedWeeks = (["volume-1", "volume-2"] as const).filter((week) =>
+  const preservedPhases = (
+    ["calibration", "volume-1", "volume-2"] as const
+  ).filter((phase) =>
     programDays.some(
       (day) =>
-        day.phase === week &&
+        day.phase === phase &&
         JSON.stringify(day.blocks) !==
           JSON.stringify(
             PROGRAM_DAYS.find((item) => item.date === day.date)?.blocks,
@@ -46,11 +48,21 @@ export function Program({
         <span>Oct 14 – Nov 15, 2026</span>
         <span className="muted">America/New_York</span>
       </div>
-      {preservedWeeks.map((week) => (
-        <p className="app-alert" role="status" key={week}>
-          Unstarted days in {PHASE_LABELS[week].toLowerCase()} keep their original
-          pairings because the week contains saved workouts from that layout.
-          Saved days keep their own targets.
+      {preservedPhases.map((phase) => (
+        <p className="app-alert" role="status" key={phase}>
+          {phase === "calibration" ? (
+            <>
+              Calibration already started under the original dates. Remaining
+              calibration days keep that layout to avoid repeat tests. Saved days
+              keep their own targets.
+            </>
+          ) : (
+            <>
+              Unstarted days in {PHASE_LABELS[phase].toLowerCase()} keep their
+              original pairings because the week contains saved workouts from that
+              layout. Saved days keep their own targets.
+            </>
+          )}
         </p>
       ))}
       <label className="filter-label">

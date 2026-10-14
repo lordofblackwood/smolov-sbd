@@ -348,4 +348,31 @@ describe('durable outbox', () => {
     expect(restored.outbox[0].snapshot.sets).toEqual(original.sets);
     expect(programDaysForWorkouts(restored.workouts)).toEqual(effective);
   });
+
+  it('preserves legacy calibration, confirmed TMs, and its queued revision through the Friday update', async () => {
+    const originalDay = ORIGINAL_PROGRAM_DAYS.find(day => day.date === '2026-10-14')!;
+    let legacy = startWorkout(originalDay, DEFAULT_SETTINGS, LOCAL_ACCOUNT_ID, NOW);
+    legacy = logSet(legacy, {
+      id: 'legacy-calibration-squat', targetId: legacy.targets[0].id, lift: 'squat', weight: 250, unit: 'lb', reps: 1,
+      outcome: 'complete', rpe: 7, notes: 'Historical calibration', pain: false, loggedAt: NOW.toISOString(),
+    });
+    const finished = finishWorkout(legacy, NOW);
+    const queued = enqueueWorkout({ ...createInitialState(settings()), workouts: [legacy] }, finished, { status: 'pending', now: NOW });
+    const before = structuredClone(queued);
+    const effective = programDaysForWorkouts(queued.workouts);
+    expect(effective.filter(day => day.phase === 'calibration')).toEqual(ORIGINAL_PROGRAM_DAYS.filter(day => day.phase === 'calibration'));
+    expect(effective.find(day => day.date === '2026-10-16')?.blocks.map(block => block.lift)).toEqual(['deadlift']);
+    expect(queued).toEqual(before);
+    await saveAppState(queued);
+    const reopened = (await loadAppState())!;
+    const restored = importBackup(exportBackup(reopened), createInitialState(DEFAULT_SETTINGS), LOCAL_ACCOUNT_ID, { restorePreferences: true }).state;
+    expect(restored.settings.trainingMaxes).toEqual(before.settings.trainingMaxes);
+    expect(restored.settings.trainingMaxes.squat?.weight).toBe(285);
+    expect(restored.workouts).toEqual(before.workouts);
+    expect(restored.outbox).toEqual(before.outbox);
+    expect(restored.workouts[0].date).toBe('2026-10-14');
+    expect(restored.workouts[0].targets.map(target => target.lift)).toEqual(['squat', 'bench']);
+    expect(restored.workouts[0].sets[0]).toMatchObject({ lift: 'squat', weight: 250, reps: 1, rpe: 7 });
+    expect(programDaysForWorkouts(restored.workouts)).toEqual(effective);
+  });
 });
