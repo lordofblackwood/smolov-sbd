@@ -1,0 +1,173 @@
+--- a/public/shared/history.mjs
++++ b/public/shared/history.mjs
+@@ -7,11 +7,13 @@
+   bulgarian: "auto-bulgarian:state:v2",
+   accessory: "accessory-lift-tracker-v1",
+   bodyweight: BODYWEIGHT_KEY,
++  smolov: "smolov-sbd:encrypted-history:v1",
+ };
+ export const SOURCE_NAMES = {
+   bulgarian: "Auto Bulgarian",
+   accessory: "Accessory Lifts",
+   bodyweight: "Away Strength",
++  smolov: "Smolov SBD",
+ };
+ export const LIFTS = {
+   backSquat: "Back Squat",
+@@ -203,6 +205,16 @@
+     "The synced history format is invalid.",
+   );
+   const ids = new Set();
++  if (source === "smolov") {
++    check(s.contract === "smolov-v1" && Array.isArray(s.sessions), "Unsupported Smolov snapshot contract.");
++    const sessionIds = new Set();
++    for (const session of s.sessions) {
++      check(session && typeof session.id === "string" && !sessionIds.has(session.id) && Number.isInteger(session.revision) && session.revision >= 1 && dateValid(session.trainingDate) && dateValid(session.scheduledDate) && typeof session.startedAt === "string" && /(Z|[+-]\d{2}:\d{2})$/.test(session.startedAt) && Number.isFinite(Date.parse(session.startedAt)) && typeof session.updatedAt === "string" && /(Z|[+-]\d{2}:\d{2})$/.test(session.updatedAt) && Number.isFinite(Date.parse(session.updatedAt)) && ["completed", "partial", "skipped"].includes(session.status) && typeof session.notes === "string", "Invalid Smolov session revision.");
++      if (session.finishedAt !== undefined) check(typeof session.finishedAt === "string" && /(Z|[+-]\d{2}:\d{2})$/.test(session.finishedAt) && Number.isFinite(Date.parse(session.finishedAt)), "Invalid Smolov finish timestamp.");
++      sessionIds.add(session.id);
++    }
++    check(s.sessions.length <= 10000 && s.events.every(event => sessionIds.has(event.sessionId)), "Missing Smolov session identity.");
++  }
+   for (const e of s.events) {
+     check(
+       e &&
+@@ -224,6 +236,14 @@
+         e.exercise in LIFTS && e.unit === "lb" && finite(e.weight),
+         "Invalid synced lift.",
+       );
++    if (source === "smolov") {
++      const session = s.sessions.find(session => session.id === e.sessionId);
++      check(Object.hasOwn(LIFTS, e.exercise) && e.unit === "lb" && typeof e.setId === "string" && e.revision === session.revision && typeof e.occurredAt === "string" && /(Z|[+-]\d{2}:\d{2})$/.test(e.occurredAt) && Number.isFinite(Date.parse(e.occurredAt)) && ["completed", "failed", "skipped"].includes(e.outcome) && ["working", "calibration", "final-single", "warmup", "meet-attempt"].includes(e.kind) && e.sets === 1 && Number.isInteger(e.reps) && e.reps >= 0 && e.reps <= 1000 && typeof e.notes === "string" && typeof e.pain === "boolean" && ["lb", "kg"].includes(e.originalUnit), "Invalid Smolov set evidence.");
++      check(e.outcome === "skipped" ? e.weight === null && e.originalWeight === null && e.reps === 0 && !e.success && !e.singleCompleted && !e.countsDay : finite(e.weight) && finite(e.originalWeight) && e.success === (e.outcome === "completed" && e.reps > 0) && e.singleCompleted === (e.success && e.reps === 1 && e.kind !== "warmup") && e.countsDay === (e.reps > 0 || e.outcome === "failed"), "Smolov actual evidence does not match its outcome.");
++      if (e.rpe !== undefined) check(["calibration", "final-single"].includes(e.kind) && e.outcome !== "skipped" && typeof e.rpe === "number" && Number.isFinite(e.rpe) && e.rpe >= 0 && e.rpe <= 10, "Invalid Smolov RPE.");
++      if (e.variant !== undefined) check(typeof e.variant === "string" && e.variant.length <= 120, "Invalid Smolov lift variant.");
++      if (e.attemptNumber !== undefined) check(e.kind === "meet-attempt" && [1, 2, 3].includes(e.attemptNumber), "Invalid meet attempt number.");
++    }
+     if (e.repSet !== undefined)
+       check(
+         source === "bulgarian" &&
+--- a/src/lib/scoring.mjs
++++ b/src/lib/scoring.mjs
+@@ -17,7 +17,7 @@
+   const records = Object.fromEntries(Object.keys(LIFTS).map((k) => [k, null]));
+   for (const e of events)
+     if (
+-      e.source === "bulgarian" &&
++      ["bulgarian", "smolov"].includes(e.source) &&
+       e.singleCompleted &&
+       e.exercise in records &&
+       (records[e.exercise]?.weight ?? -1) < e.weight
+--- a/src/components/Connect.jsx
++++ b/src/components/Connect.jsx
+@@ -19,6 +19,12 @@
+     "Away Strength",
+     "Air squats, push-ups & glute bridges",
+     "https://lordofblackwood.github.io/away-strength/",
++  ],
++  [
++    "smolov",
++    "Smolov SBD",
++    "Actual squat, bench & deadlift sets and meet preparation",
++    "https://smolov-sbd.micak27.chatgpt.site/",
+   ],
+ ];
+ export function Connect({ store, onDemo, install }) {
+@@ -199,6 +205,7 @@
+           </li>
+           <li>Repeat in your existing Accessory Lifts home-screen app.</li>
+           <li>For bodyweight workouts, install Away Strength from its link above. In its Sync tab, paste the same code and tap <strong>Connect dashboard</strong>.</li>
++          <li>For Smolov SBD, use the same code in Settings. Its independent source keeps Auto Bulgarian history intact.</li>
+         </ol>
+         <p>
+           Keep logging in your original apps. After each change, the open
+--- a/src/components/History.jsx
++++ b/src/components/History.jsx
+@@ -21,6 +21,7 @@
+           {[
+             ["all", "All training"],
+             ["bulgarian", "Main lifts"],
++            ["smolov", "Smolov SBD"],
+             ["accessory", "Accessories"],
+             ["bodyweight", "Bodyweight"],
+           ].map(([id, label]) => (
+--- a/src/components/Dashboard.jsx
++++ b/src/components/Dashboard.jsx
+@@ -169,6 +169,8 @@
+               ·{" "}
+               {e.source === "bulgarian"
+                 ? "Auto Bulgarian"
++                : e.source === "smolov"
++                  ? `Smolov SBD · ${e.kind === "warmup" ? "warm-up" : `${e.reps} actual reps`}`
+                 : e.source === "bodyweight"
+                   ? `Away Strength · ${e.variant}`
+                   : "Accessory Lifts"}
+--- /dev/null
++++ b/tests/smolov-source.test.mjs
+@@ -0,0 +1,67 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { validateSnapshot } from '../public/shared/history.mjs';
++import { dashboard } from '../src/lib/scoring.mjs';
++import { newCode, encryptSnapshot, decryptSnapshot } from '../public/shared/sync.mjs';
++
++function snapshot() {
++  const date = '2026-10-14', timestamp = '2026-10-14T16:00:00Z';
++  const session = { id: 'calibration', revision: 1, trainingDate: date, scheduledDate: date, startedAt: timestamp, updatedAt: timestamp, finishedAt: timestamp, status: 'completed', notes: '' };
++  const events = [['backSquat', 'Back Squat', 250], ['benchPress', 'Bench Press', 200], ['deadlift', 'Deadlift', 300]].map(([exercise, name, weight]) => ({
++    id: `calibration:${exercise}`, source: 'smolov', sessionId: session.id, setId: exercise, revision: 1, date, occurredAt: timestamp, exercise, name,
++    weight, unit: 'lb', originalWeight: weight, originalUnit: 'lb', sets: 1, reps: 1, outcome: 'completed', success: true,
++    singleCompleted: true, countsDay: true, kind: 'calibration', notes: '', pain: false, rpe: 7,
++  }));
++  return { schema: 1, source: 'smolov', contract: 'smolov-v1', sessions: [session], events };
++}
++
++test('Smolov source decrypts through the original encryption client and validates exact evidence', async () => {
++  const original = snapshot(), code = newCode();
++  assert.deepEqual(validateSnapshot(original, 'smolov'), original);
++  assert.deepEqual(await decryptSnapshot(code, await encryptSnapshot(code, original), 'smolov'), original);
++});
++
++test('proven Smolov singles use existing dashboard scoring without changing other sources', () => {
++  const source = snapshot(), scored = dashboard({ smolov: source }, '2026-10-14');
++  assert.equal(scored.strength.total, 750);
++  assert.equal(scored.strength.complete, true);
++  assert.equal(scored.consistency.totalDays, 1);
++  assert.equal(scored.accessories.length, 0);
++  assert.equal(scored.bodyweight.length, 0);
++});
++
++test('failed, skipped, warm-up and multi-rep evidence never become a proven single', () => {
++  const source = snapshot();
++  source.events[0] = { ...source.events[0], weight: 999, originalWeight: 999, outcome: 'failed', success: false, singleCompleted: false };
++  source.events[1] = { ...source.events[1], weight: null, originalWeight: null, outcome: 'skipped', reps: 0, success: false, singleCompleted: false, countsDay: false };
++  delete source.events[1].rpe;
++  source.events[2] = { ...source.events[2], kind: 'warmup', singleCompleted: false };
++  delete source.events[2].rpe;
++  validateSnapshot(source, 'smolov');
++  assert.equal(dashboard({ smolov: source }, '2026-10-14').strength.known, 0);
++  source.events[2] = { ...source.events[2], kind: 'working', reps: 6 };
++  validateSnapshot(source, 'smolov');
++  assert.equal(dashboard({ smolov: source }, '2026-10-14').strength.known, 0);
++});
++
++test('unknown variants of identifiers, ordinary-set RPE and timezone-free activity are rejected', () => {
++  let source = snapshot();
++  source.events[0].exercise = 'made-up-squat';
++  assert.throws(() => validateSnapshot(source, 'smolov'));
++  source = snapshot();
++  source.events[0].kind = 'working';
++  assert.throws(() => validateSnapshot(source, 'smolov'));
++  source = snapshot();
++  source.events[0].occurredAt = '2026-10-14T16:00:00';
++  assert.throws(() => validateSnapshot(source, 'smolov'));
++});
++
++test('snapshot corrections remove previous evidence without modifying the older snapshot', () => {
++  const before = snapshot(), saved = structuredClone(before), after = structuredClone(before);
++  after.sessions[0].revision = 2;
++  after.events = after.events.filter(event => event.exercise !== 'benchPress').map(event => ({ ...event, revision: 2 }));
++  validateSnapshot(after, 'smolov');
++  assert.equal(dashboard({ smolov: before }, '2026-10-14').strength.complete, true);
++  assert.equal(dashboard({ smolov: after }, '2026-10-14').strength.complete, false);
++  assert.deepEqual(before, saved);
++});

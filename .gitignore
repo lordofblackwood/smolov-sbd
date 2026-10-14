@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env*
+!.env.example
+*.tsbuildinfo
+.openai/state/
+playwright-report/
+test-results/
