@@ -31,6 +31,7 @@ import {
 import { useWriterLock } from "./storage/useWriterLock";
 import { Icon } from "./components/Icon";
 import { Modal } from "./components/Modal";
+import { ScheduleRevision } from "./components/ScheduleRevision";
 import { Today } from "./screens/Today";
 import { Program } from "./screens/Program";
 import { History } from "./screens/History";
@@ -423,7 +424,7 @@ export default function App() {
       "Training max confirmed. Future unstarted prescriptions updated; saved workout targets are preserved.",
     );
   };
-  const day = getProgramDay(selectedDate);
+  const day = getProgramDay(selectedDate, state?.workouts ?? []);
   const workout = state?.workouts.find((w) => w.id === workoutId);
   const dayWorkout = state?.workouts.find((w) => w.date === selectedDate);
   const active = state?.workouts.some((w) => w.status === "active") ?? false;
@@ -489,6 +490,12 @@ export default function App() {
         </div>
       </nav>
       <main className="app-main">
+        {page === "program" && !workout && !meetOpen ? (
+          <ScheduleRevision
+            workouts={state.workouts}
+            settings={state.settings}
+          />
+        ) : null}
         {!canWrite ? (
           <div className="app-alert" role="status">
             {writer.message}

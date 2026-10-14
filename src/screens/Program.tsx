@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { Settings, Workout } from "../domain/types";
 import {
   PROGRAM_DAYS,
+  programDaysForWorkouts,
+  getProgramDay,
   PHASE_LABELS,
   LIFT_LABELS,
   calculateWorkingWeight,
@@ -10,7 +12,7 @@ import {
   prescribedReps,
   todayDate,
 } from "../domain/program";
-import { phaseShort, weightText } from "../ui";
+import { weightText } from "../ui";
 import { Icon } from "../components/Icon";
 export function Program({
   settings,
@@ -22,7 +24,18 @@ export function Program({
   onDay: (date: string) => void;
 }) {
   const [phase, setPhase] = useState<string>("all");
-  const visible = PROGRAM_DAYS.filter(
+  const programDays = programDaysForWorkouts(workouts);
+  const preservedWeeks = (["volume-1", "volume-2"] as const).filter((week) =>
+    programDays.some(
+      (day) =>
+        day.phase === week &&
+        JSON.stringify(day.blocks) !==
+          JSON.stringify(
+            PROGRAM_DAYS.find((item) => item.date === day.date)?.blocks,
+          ),
+    ),
+  );
+  const visible = programDays.filter(
     (d) => phase === "all" || d.phase === phase,
   );
   return (
@@ -33,6 +46,13 @@ export function Program({
         <span>Oct 14 – Nov 15, 2026</span>
         <span className="muted">America/New_York</span>
       </div>
+      {preservedWeeks.map((week) => (
+        <p className="app-alert" role="status" key={week}>
+          Unstarted days in {PHASE_LABELS[week].toLowerCase()} keep their original
+          pairings because the week contains saved workouts from that layout.
+          Saved days keep their own targets.
+        </p>
+      ))}
       <label className="filter-label">
         Phase
         <select value={phase} onChange={(e) => setPhase(e.target.value)}>
@@ -49,9 +69,7 @@ export function Program({
           <h2>Each volume week</h2>
           <p>
             {Object.entries(
-              prescribedReps(
-                PROGRAM_DAYS.filter((d) => d.phase === "volume-1"),
-              ),
+              prescribedReps(programDays.filter((d) => d.phase === "volume-1")),
             )
               .filter(([l]) => l !== "combined")
               .map(([l, n]) => (
@@ -67,8 +85,9 @@ export function Program({
         </div>
       )}
       <div className="calendar-list">
-        {visible.map((d, i) => {
-          const w = workouts.find((w) => w.date === d.date);
+        {visible.map((planned, i) => {
+          const w = workouts.find((w) => w.date === planned.date);
+          const d = w ? (getProgramDay(w.date, workouts) ?? planned) : planned;
           return (
             <div key={d.date}>
               {(i === 0 || d.phase !== visible[i - 1].phase) && (
@@ -88,18 +107,28 @@ export function Program({
                 </div>
                 <div className="day-prescriptions">
                   {d.blocks.length ? (
-                    d.blocks.map((b) => (
-                      <div key={b.id}>
-                        <strong>{LIFT_LABELS[b.lift]}</strong>
-                        <span>
-                          {b.sets} × {b.reps} ·{" "}
-                          {b.rpeTarget
-                            ? `RPE ${b.rpeTarget}`
-                            : `${weightText(calculateWorkingWeight(b, settings))} ${settings.unit}`}
-                        </span>
-                        <small>{formatRule(b)}</small>
-                      </div>
-                    ))
+                    d.blocks.map((b) => {
+                      const saved = w?.targets.find(
+                        (target) => target.blockId === b.id,
+                      );
+                      const weight = saved
+                        ? saved.weight
+                        : calculateWorkingWeight(b, settings);
+                      const unit = saved ? saved.unit : settings.unit;
+                      const rpeTarget = saved ? saved.rpeTarget : b.rpeTarget;
+                      return (
+                        <div key={b.id}>
+                          <strong>{LIFT_LABELS[b.lift]}</strong>
+                          <span>
+                            {b.sets} × {b.reps} ·{" "}
+                            {rpeTarget
+                              ? `RPE ${rpeTarget}`
+                              : `${weightText(weight)} ${unit}`}
+                          </span>
+                          <small>{saved ? saved.rule : formatRule(b)}</small>
+                        </div>
+                      );
+                    })
                   ) : (
                     <span>
                       {d.phase === "meet"

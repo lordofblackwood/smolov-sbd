@@ -1,6 +1,6 @@
 # Smolov SBD · Meet Prep
 
-A mobile-first, local-first PWA for **Modified Smolov Jr. — SBD Meet Prep**, October 14–November 15, 2026. The exact supplied schedule is implemented in `src/domain/program.ts`; the meet date and America/New_York calendar do not shift when a workout is missed.
+A mobile-first, local-first PWA for **Modified Smolov Jr. — SBD Meet Prep**, October 14–November 15, 2026. The supplied schedule, including the approved volume-week pairing revision below, is implemented in `src/domain/program.ts`; the meet date and America/New_York calendar do not shift when a workout is missed.
 
 ## Run, test and build
 
@@ -32,6 +32,24 @@ The `dist` output can also be served by a static HTTPS host; localhost is permit
 
 Keep a dedicated subpath/origin: the manifest, app assets and service-worker scope use the configured base. This service worker precaches only the app shell/assets, not authenticated API responses or connection credentials. An update waits for user action and is disabled while a workout is active or a local save is pending.
 
+## Volume-week pairings
+
+The user's revised pairings apply to both volume weeks:
+
+| Day       | First lift             | Second lift         |
+| --------- | ---------------------- | ------------------- |
+| Monday    | Deadlift 5×3 at 85% TM | —                   |
+| Tuesday   | Squat 3×6 at 70% TM    | Bench 3×6 at 70% TM |
+| Wednesday | Squat 4×5 at 75% TM    | Bench 4×5 at 75% TM |
+| Thursday  | Deadlift 3×6 at 70% TM | Bench 5×3 at 85% TM |
+| Friday    | Squat 4×4 at 80% TM    | Bench 4×4 at 80% TM |
+| Saturday  | Squat 5×3 at 85% TM    | —                   |
+| Sunday    | Rest                   | —                   |
+
+Thursday takes the bench prescription from the heaviest squat day. Weekly reps remain 69 squat, 69 bench and 33 deadlift. Week 2 still adds 5 lb after rounding for squat/bench only; calibration, peak, taper and meet prescriptions are unchanged.
+
+The Program screen previews the future changed dates and calculated targets. Unstarted days in a volume week containing an original-layout target snapshot retain the original pairings, preventing duplicated moved work or silent changes to an active session. Saved days display their own original or revised targets, including after a backup import combines layouts. Untouched weeks use the revised pairings. Saved weights, actual sets, timestamps and outbox revisions remain intact.
+
 ## Use
 
 - Start on Today. Initial calibration sessions require actual loading and achieved RPE; no confirmed TMs or example workouts are seeded.
@@ -56,7 +74,7 @@ See [integration documentation](docs/powerlevel-integration.md) for the live dep
 
 ## Verification
 
-Final checks: 85 automated tests, type checking and production build pass; 13 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
+Final checks: 95 automated tests, type checking and production build pass; 17 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
 
 The automated suite covers the exact schedule/order/reps; half-up loading and Week 2 offsets; RPE restrictions; null default TMs; snapshot integrity; timezone/DST; actual logging/edit/undo/failure/skip; warm-ups; IndexedDB failure/reopen/account separation; conservative backups; rest timers; conditional sync/revisions/concurrent writers/authentication/ambiguous reconciliation; and mixed-unit meet totals.
 

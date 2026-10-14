@@ -97,42 +97,44 @@ export function Today({
             </span>
           )}
         </div>
-        {day?.blocks.map((b, i) => (
-          <div className="lift-row" key={b.id}>
-            <span className="lift-number">
-              {String(i + 1).padStart(2, "0")}
-            </span>
-            <div className="lift-info">
-              <h3>{LIFT_LABELS[b.lift]}</h3>
-              <strong>
-                {b.sets} × {b.reps}
-              </strong>
-              <span>
-                {b.rpeTarget ? `Target RPE ${b.rpeTarget}` : formatRule(b)}
+        {day?.blocks.map((b, i) => {
+          const saved = workout?.targets.find(
+            (target) => target.blockId === b.id,
+          );
+          const weight = saved
+            ? saved.weight
+            : calculateWorkingWeight(b, settings);
+          const unit = saved ? saved.unit : settings.unit;
+          return (
+            <div className="lift-row" key={b.id}>
+              <span className="lift-number">
+                {String(i + 1).padStart(2, "0")}
               </span>
+              <div className="lift-info">
+                <h3>{LIFT_LABELS[b.lift]}</h3>
+                <strong>
+                  {b.sets} × {b.reps}
+                </strong>
+                <span>
+                  {b.rpeTarget ? `Target RPE ${b.rpeTarget}` : formatRule(b)}
+                </span>
+              </div>
+              <div className="lift-weight">
+                <strong>
+                  {weightText(weight)}
+                  <small> {unit}</small>
+                </strong>
+                <span>
+                  {b.rpeTarget
+                    ? "Enter actual single"
+                    : settings.trainingMaxes[b.lift]
+                      ? "Working weight"
+                      : "Confirm training max"}
+                </span>
+              </div>
             </div>
-            <div className="lift-weight">
-              <strong>
-                {weightText(
-                  workout?.targets.find((t) => t.blockId === b.id)?.weight ??
-                    calculateWorkingWeight(b, settings),
-                )}
-                <small>
-                  {" "}
-                  {workout?.targets.find((t) => t.blockId === b.id)?.unit ??
-                    settings.unit}
-                </small>
-              </strong>
-              <span>
-                {b.rpeTarget
-                  ? "Enter actual single"
-                  : settings.trainingMaxes[b.lift]
-                    ? "Working weight"
-                    : "Confirm training max"}
-              </span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {day?.recovery ? (
           <div className="recovery">
             <Icon name="weight" size={36} />

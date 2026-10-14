@@ -1,6 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import type { AppState } from '../src/storage/types';
+import { LOCAL_ACCOUNT_ID, createInitialState } from '../src/storage/types';
+import { DEFAULT_SETTINGS, ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, skipWorkout, startWorkout } from '../src/domain/program';
+import { exportBackup } from '../src/storage/backup';
 
 // Browser plugin not available. These isolated Chromium contexts exercise the real
 // production UI and IndexedDB. External origins are blocked; no live accounts are used.
@@ -56,11 +59,11 @@ async function beginVolumeSession(page: Page) {
   await expect(page.getByRole('button', { name: 'Start workout', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Start workout', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Deadlift', level: 1 })).toBeVisible();
-  await expect(page.getByText('0 of 8 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByText('0 of 5 sets logged', { exact: true })).toBeVisible();
 }
 
 test.beforeEach(async ({ page, context, baseURL }) => {
-  // The test date controls scheduled UI only; no fixture workouts are seeded.
+  // The test date controls scheduled UI; legacy records use the real backup import flow.
   await page.clock.setFixedTime(trainingDate);
   await context.route('**/*', async route => {
     if (new URL(route.request().url()).origin === new URL(baseURL!).origin) await route.continue();
@@ -132,6 +135,127 @@ test('production app renders an accessible phone layout and truthful empty state
   expect(errors).toEqual([]);
 });
 
+test('both volume weeks put bench after light deadlift and leave heaviest squat alone', async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  await page.goto('./');
+  await enterTrainingMaxes(page);
+  await navigate(page, 'Program');
+  const revision = page.getByRole('region', { name: 'Volume schedule update', exact: true });
+  await expect(revision).toBeVisible();
+  await revision.getByText('Preview 10 future changed days', { exact: true }).click();
+  await expect(revision.locator('.schedule-changes > div')).toHaveCount(10);
+  const thursdayChange = revision.locator('.schedule-changes > div').filter({ hasText: 'Thu, Oct 22' });
+  await expect(thursdayChange).toContainText('Before: Squat 4 × 4');
+  await expect(thursdayChange).toContainText('Now: Deadlift 3 × 6');
+  await expect(thursdayChange).toContainText('Bench 5 × 3 · 85% TM · 240 lb');
+  await revision.getByText('Preview 10 future changed days', { exact: true }).click();
+  const expected = [
+    ['Deadlift'], ['Squat', 'Bench'], ['Squat', 'Bench'],
+    ['Deadlift', 'Bench'], ['Squat', 'Bench'], ['Squat'],
+  ];
+  for (const [week, dates, heavyBench] of [
+    ['volume-1', ['Oct 19', 'Oct 20', 'Oct 21', 'Oct 22', 'Oct 23', 'Oct 24'], '240 lb'],
+    ['volume-2', ['Oct 26', 'Oct 27', 'Oct 28', 'Oct 29', 'Oct 30', 'Oct 31'], '245 lb'],
+  ] as const) {
+    await page.getByRole('combobox', { name: 'Phase', exact: true }).selectOption(week);
+    for (const [index, date] of dates.entries()) {
+      const row = page.locator('.calendar-day').filter({ hasText: date });
+      await expect(row.locator('.day-prescriptions strong')).toHaveText(expected[index]);
+    }
+    const lightDeadliftDay = page.locator('.calendar-day').filter({ hasText: dates[3] });
+    const prescriptions = lightDeadliftDay.locator('.day-prescriptions > div');
+    await expect(prescriptions.nth(0)).toContainText('3 × 6 · 200 lb');
+    await expect(prescriptions.nth(0)).toContainText('70% TM');
+    await expect(prescriptions.nth(1)).toContainText(`5 × 3 · ${heavyBench}`);
+    await expect(prescriptions.nth(1)).toContainText('85% TM');
+    const heavySquatDay = page.locator('.calendar-day').filter({ hasText: dates[5] });
+    await expect(heavySquatDay.locator('.day-prescriptions > div')).toHaveCount(1);
+    await expect(heavySquatDay).toContainText('5 × 3');
+    await expect(heavySquatDay).toContainText('85% TM');
+    await expect(page.locator('.program-volume')).toContainText('Squat 69 reps');
+    await expect(page.locator('.program-volume')).toContainText('Bench 69 reps');
+    await expect(page.locator('.program-volume')).toContainText('Deadlift 33 reps');
+    await noHorizontalOverflow(page);
+    if (week === 'volume-1') {
+      await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-revised-volume-week.png`, fullPage: true, animations: 'disabled' });
+      if (info.project.name === 'mobile') {
+        await lightDeadliftDay.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: '/private/tmp/smolov-sbd-mobile-revised-pairings.png', fullPage: false, animations: 'disabled' });
+      }
+    }
+  }
+  await page.locator('.calendar-day').filter({ hasText: 'Oct 29' }).click();
+  await page.getByRole('button', { name: 'Start workout', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Deadlift', level: 1 })).toBeVisible();
+  await expect(page.getByText('0 of 8 sets logged', { exact: true })).toBeVisible();
+  await page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: /Bench/ }).click();
+  await expect(page.getByRole('heading', { name: 'Bench', level: 1 })).toBeVisible();
+  await expect(page.getByText('Planned 245 lb × 3', { exact: true })).toHaveCount(5);
+  expect(errors).toEqual([]);
+});
+
+test('mixed backup keeps original and revised saved days with their own targets', async ({ page }, info) => {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  for (const lift of ['squat', 'bench', 'deadlift'] as const) {
+    settings.trainingMaxes[lift] = { weight: 285, unit: 'lb', confirmedAt: trainingDate.toISOString() };
+  }
+  const originalDay = ORIGINAL_PROGRAM_DAYS.find(day => day.date === '2026-10-19')!;
+  const original = startWorkout(originalDay, settings, LOCAL_ACCOUNT_ID, trainingDate);
+  const revisedSettings = structuredClone(settings);
+  revisedSettings.trainingMaxes.squat!.weight = 300;
+  revisedSettings.trainingMaxes.bench = null;
+  const revised = skipWorkout(PROGRAM_DAYS.find(day => day.date === '2026-10-20')!, revisedSettings, LOCAL_ACCOUNT_ID, trainingDate);
+  const previousState = createInitialState(settings);
+  previousState.workouts = [original, revised];
+  const backup = exportBackup(previousState, LOCAL_ACCOUNT_ID, trainingDate);
+  await page.goto('./');
+  await enterTrainingMaxes(page);
+  await page.getByLabel('Import JSON backup', { exact: true }).setInputFiles({
+    name: 'mixed-layout-workouts.json', mimeType: 'application/json', buffer: Buffer.from(backup),
+  });
+  await expect(page.getByText('Imported 2 workouts; 0 duplicates skipped; 0 conflicts kept unchanged.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await readState(page))?.workouts).toEqual([original, revised]);
+  await navigate(page, 'Program');
+  await expect(page.getByText('Unstarted days in volume week 1 keep their original pairings because the week contains saved workouts from that layout. Saved days keep their own targets.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Preview 5 future changed days', { exact: true })).toBeVisible();
+  for (const [date, lifts] of [
+    ['Oct 19', ['Deadlift', 'Squat']],
+    ['Oct 20', ['Squat', 'Bench']],
+    ['Oct 22', ['Squat', 'Deadlift']],
+    ['Oct 24', ['Squat', 'Bench']],
+    ['Oct 29', ['Deadlift', 'Bench']],
+    ['Oct 31', ['Squat']],
+  ] as const) {
+    await expect(page.locator('.calendar-day').filter({ hasText: date }).locator('.day-prescriptions strong')).toHaveText([...lifts]);
+  }
+  const revisedDay = page.locator('.calendar-day').filter({ hasText: 'Oct 20' });
+  await expect(revisedDay.locator('.day-prescriptions > div').nth(0)).toContainText('3 × 6 · 210 lb');
+  await expect(revisedDay.locator('.day-prescriptions > div').nth(1)).toContainText('3 × 6 · — lb');
+  await revisedDay.click();
+  await expect(page.locator('.lift-row h3')).toHaveText(['Squat', 'Bench']);
+  await expect(page.locator('.lift-row').nth(0)).toContainText('210 lb');
+  await expect(page.locator('.lift-row').nth(1)).toContainText('— lb');
+  await navigate(page, 'Today');
+  await expect(page.locator('.lift-row').nth(0)).toContainText('240 lb');
+  await expect(page.locator('.lift-row').nth(1)).toContainText('200 lb');
+  await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
+  await expect(page.getByText('0 of 8 sets logged', { exact: true })).toBeVisible();
+  await page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: /Squat/ }).click();
+  await expect(page.getByText('Planned 200 lb × 6', { exact: true })).toHaveCount(3);
+  await page.reload();
+  expect((await readState(page))?.workouts).toEqual([original, revised]);
+  await expect(page.locator('.lift-row').nth(0)).toContainText('240 lb');
+  await expect(page.locator('.lift-row').nth(1)).toContainText('200 lb');
+  await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
+  await expect(page.getByText('0 of 8 sets logged', { exact: true })).toBeVisible();
+  await page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: /Squat/ }).click();
+  await expect(page.getByText('Planned 200 lb × 6', { exact: true })).toHaveCount(3);
+  await noHorizontalOverflow(page);
+  await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-legacy-active-reopened.png`, fullPage: true, animations: 'disabled' });
+});
+
 test('logs actual sets, refreshes, finishes offline, reopens offline, and merges backup duplicates', async ({ page, context }, info) => {
   await page.goto('./');
   await beginVolumeSession(page);
@@ -152,16 +276,16 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   await page.getByRole('dialog').getByRole('button', { name: 'Save failed set', exact: true }).click();
   const skippedRow = page.locator('.set-row').filter({ has: page.getByRole('button', { name: 'Complete Deadlift set 3', exact: true }) });
   await skippedRow.getByRole('button', { name: 'Skip', exact: true }).click();
-  await expect(page.getByText('3 of 8 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByText('3 of 5 sets logged', { exact: true })).toBeVisible();
   await page.locator('.set-row.logged.skipped').getByRole('button', { name: 'Undo', exact: true }).click();
-  await expect(page.getByText('2 of 8 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByText('2 of 5 sets logged', { exact: true })).toBeVisible();
   await skippedRow.getByRole('button', { name: 'Skip', exact: true }).click();
   await page.locator('.warmups').getByText('Warm-up sets (optional)', { exact: true }).click();
   await page.locator('.warmups').getByRole('button', { name: 'Add deadlift warm-up', exact: true }).click();
   await page.locator('.warmups').getByLabel('Deadlift set 1 actual weight', { exact: true }).fill('95');
   await page.locator('.warmups').getByLabel('Deadlift set 1 actual reps', { exact: true }).fill('5');
   await page.locator('.warmups').getByRole('button', { name: 'Complete Deadlift set 1', exact: true }).click();
-  await expect(page.getByText('3 of 8 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByText('3 of 5 sets logged', { exact: true })).toBeVisible();
   await expect.poll(async () => (await readState(page))?.workouts[0]?.sets.length).toBe(4);
   const before = await readState(page);
   expect(before?.workouts[0].targets[0]).toMatchObject({ weight: 240, reps: 3, unit: 'lb' });
@@ -172,7 +296,7 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   await page.clock.setFixedTime(new Date(trainingDate.getTime() + 10_000));
   await page.reload();
   await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
-  await expect(page.getByText('3 of 8 sets logged', { exact: true })).toBeVisible();
+  await expect(page.getByText('3 of 5 sets logged', { exact: true })).toBeVisible();
   await expect(page.getByRole('timer')).toHaveText('2:50');
   expect((await readState(page))?.timerEnd).toBe(timerEnd);
   await noHorizontalOverflow(page);
@@ -188,7 +312,7 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   await finish.getByRole('button', { name: 'Finish & save locally', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Training history', level: 1 })).toBeVisible();
   await expect(page.locator('.history-session')).toHaveCount(1);
-  await expect(page.getByText('1 complete · 1 failed · 1 skipped · 5 unlogged', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 complete · 1 failed · 1 skipped · 2 unlogged', { exact: true })).toBeVisible();
   await expect(page.getByText('Sync needs attention', { exact: true })).toBeVisible();
   await expect.poll(async () => (await readState(page))?.workouts[0]?.status).toBe('partial');
   const finished = await readState(page);
@@ -202,7 +326,7 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   await expect(reopened.getByRole('heading', { name: 'Today’s training', level: 1 })).toBeVisible();
   await navigate(reopened, 'History');
   await expect(reopened.locator('.history-session')).toHaveCount(1);
-  await expect(reopened.getByText('1 complete · 1 failed · 1 skipped · 5 unlogged', { exact: true })).toBeVisible();
+  await expect(reopened.getByText('1 complete · 1 failed · 1 skipped · 2 unlogged', { exact: true })).toBeVisible();
   await reopened.close();
   await context.setOffline(false);
   await page.getByRole('button', { name: 'Retry pending sync', exact: true }).click();
@@ -297,14 +421,15 @@ test('backup preference restore previews future targets and preserves the active
   expect(restored?.workouts[0]).toEqual(original);
   await navigate(page, 'Today');
   await expect(page.locator('.lift-row').first()).toContainText('240 lb');
-  await expect(page.locator('.lift-row').nth(1)).toContainText('200 lb');
+  await expect(page.locator('.lift-row')).toHaveCount(1);
   await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
   await expect(page.getByLabel('Deadlift set 1 actual weight', { exact: true })).toHaveValue('240');
   await expect(page.locator('.target-label').first()).toHaveText('Planned 240 lb × 3');
-  await page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: /Squat/ }).click();
-  await expect(page.getByText('Planned 200 lb × 6', { exact: true })).toHaveCount(3);
+  await expect(page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: /Squat/ })).toHaveCount(0);
   await expect(page.getByRole('timer')).toHaveText('1:30');
   await navigate(page, 'Program');
+  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 19' })).toContainText('240 lb');
+  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 19' })).not.toContainText('kg');
   await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 21' })).toContainText('102.5 kg');
   await page.reload();
   expect((await readState(page))?.workouts[0]).toEqual(original);
@@ -359,7 +484,7 @@ test('a second tab reads safely and reloads saved state before acquiring the edi
   await expect(readonly).toBeVisible();
   await navigate(second, 'History');
   await expect(second.getByRole('heading', { name: 'Training history', level: 1 })).toBeVisible();
-  await expect(second.getByText('1 complete · 0 failed · 0 skipped · 7 unlogged', { exact: true })).toBeVisible();
+  await expect(second.getByText('1 complete · 0 failed · 0 skipped · 4 unlogged', { exact: true })).toBeVisible();
   await expect(second.getByRole('button', { name: 'Resume workout', exact: true })).toBeDisabled();
   await expect(second.getByRole('button', { name: 'Retry pending sync', exact: true })).toBeDisabled();
   expect((await readState(second))?.workouts[0]).toEqual(original);
@@ -369,7 +494,7 @@ test('a second tab reads safely and reloads saved state before acquiring the edi
   await navigate(second, 'Today');
   await expect(second.getByRole('button', { name: 'Resume workout', exact: true })).toBeEnabled();
   await second.getByRole('button', { name: 'Resume workout', exact: true }).click();
-  await expect(second.getByText('1 of 8 sets logged', { exact: true })).toBeVisible();
+  await expect(second.getByText('1 of 5 sets logged', { exact: true })).toBeVisible();
   await second.getByRole('button', { name: 'Complete Deadlift set 2', exact: true }).click();
   await expect.poll(async () => (await readState(second))?.workouts[0]?.sets.length).toBe(2);
   const saved = (await readState(second))!.workouts[0];

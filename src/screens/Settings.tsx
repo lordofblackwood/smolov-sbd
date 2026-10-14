@@ -9,7 +9,7 @@ import type {
 import {
   LIFTS,
   LIFT_LABELS,
-  PROGRAM_DAYS,
+  programDaysForWorkouts,
   calculateWorkingWeight,
   previewTrainingMaxChange,
   convertWeight,
@@ -460,34 +460,37 @@ export function Settings({
             as recorded.
           </p>
           <div className="preview-list">
-            {PROGRAM_DAYS.filter(
-              (d) =>
-                d.date >= todayDate() &&
-                !state.workouts.some((w) => w.date === d.date),
-            ).flatMap((d) =>
-              d.blocks
-                .filter((b) => b.percent !== undefined)
-                .map((b) => {
-                  const before = calculateWorkingWeight(b, settings);
-                  const after = calculateWorkingWeight(
-                    b,
-                    pendingImport.state.settings,
-                  );
-                  return before === after &&
-                    settings.unit ===
-                      pendingImport.state.settings.unit ? null : (
-                    <div key={b.id}>
-                      <span>
-                        {d.date.slice(5)} · {LIFT_LABELS[b.lift]}
-                      </span>
-                      <strong>
-                        {weightText(before)} {settings.unit} →{" "}
-                        {weightText(after)} {pendingImport.state.settings.unit}
-                      </strong>
-                    </div>
-                  );
-                }),
-            )}
+            {programDaysForWorkouts(state.workouts)
+              .filter(
+                (d) =>
+                  d.date >= todayDate() &&
+                  !state.workouts.some((w) => w.date === d.date),
+              )
+              .flatMap((d) =>
+                d.blocks
+                  .filter((b) => b.percent !== undefined)
+                  .map((b) => {
+                    const before = calculateWorkingWeight(b, settings);
+                    const after = calculateWorkingWeight(
+                      b,
+                      pendingImport.state.settings,
+                    );
+                    return before === after &&
+                      settings.unit ===
+                        pendingImport.state.settings.unit ? null : (
+                      <div key={b.id}>
+                        <span>
+                          {d.date.slice(5)} · {LIFT_LABELS[b.lift]}
+                        </span>
+                        <strong>
+                          {weightText(before)} {settings.unit} →{" "}
+                          {weightText(after)}{" "}
+                          {pendingImport.state.settings.unit}
+                        </strong>
+                      </div>
+                    );
+                  }),
+              )}
           </div>
           <button
             className="primary"

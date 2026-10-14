@@ -168,8 +168,43 @@ function day(
 function volumeWeek(
   startDate: string,
   phase: "volume-1" | "volume-2",
+  revised = false,
 ): ProgramDay[] {
   const offset = phase === "volume-2" ? 5 : 0;
+  if (revised)
+    return [
+      day(startDate, phase, [working("deadlift", 5, 3, 85)]),
+      day(
+        addDays(startDate, 1),
+        phase,
+        [
+          working("squat", 3, 6, 70, offset),
+          working("bench", 3, 6, 70, offset),
+        ],
+        null,
+        "Optional light upper-back accessories",
+      ),
+      day(addDays(startDate, 2), phase, [
+        working("squat", 4, 5, 75, offset),
+        working("bench", 4, 5, 75, offset),
+      ]),
+      day(addDays(startDate, 3), phase, [
+        working("deadlift", 3, 6, 70),
+        working("bench", 5, 3, 85, offset),
+      ]),
+      day(
+        addDays(startDate, 4),
+        phase,
+        [
+          working("squat", 4, 4, 80, offset),
+          working("bench", 4, 4, 80, offset),
+        ],
+        null,
+        "Optional light upper-back accessories",
+      ),
+      day(addDays(startDate, 5), phase, [working("squat", 5, 3, 85, offset)]),
+      day(addDays(startDate, 6), phase, [], "Rest"),
+    ];
   return [
     day(startDate, phase, [
       working("deadlift", 5, 3, 85),
@@ -206,7 +241,7 @@ function volumeWeek(
 }
 
 /** Frozen source definitions. Actual workouts store independent target snapshots. */
-export const PROGRAM_DAYS: readonly ProgramDay[] = Object.freeze([
+export const ORIGINAL_PROGRAM_DAYS: readonly ProgramDay[] = Object.freeze([
   day("2026-10-14", "calibration", [
     calibration("squat"),
     calibration("bench"),
@@ -266,8 +301,97 @@ export const PROGRAM_DAYS: readonly ProgramDay[] = Object.freeze([
   day(MEET_DATE, "meet"),
 ]);
 
-export function getProgramDay(date: string): ProgramDay | undefined {
-  return PROGRAM_DAYS.find((item) => item.date === date);
+/** User-requested revision: bench follows light deadlifts, heavy squat is alone. */
+const revisedVolumeDays = new Map(
+  [
+    ...volumeWeek("2026-10-19", "volume-1", true),
+    ...volumeWeek("2026-10-26", "volume-2", true),
+  ].map((item) => [item.date, item]),
+);
+export const PROGRAM_DAYS: readonly ProgramDay[] = Object.freeze(
+  ORIGINAL_PROGRAM_DAYS.map((item) => revisedVolumeDays.get(item.date) ?? item),
+);
+
+function prescriptionSignature(targets: readonly SetTarget[]): string {
+  return JSON.stringify(
+    targets
+      .filter((target) => target.kind !== "warmup")
+      .map((target) => [
+        target.blockId,
+        target.lift,
+        target.setNumber,
+        target.reps,
+        target.rule,
+        target.kind,
+        target.rpeTarget ?? null,
+      ]),
+  );
+}
+
+/** Keep an already-started volume week together; moved work must not be duplicated. */
+export function programDaysForWorkouts(
+  workouts: readonly Workout[],
+): readonly ProgramDay[] {
+  const originalWeeks = new Set<Phase>();
+  for (const workout of workouts) {
+    const revised = PROGRAM_DAYS.find((item) => item.date === workout.date);
+    if (!revised || !["volume-1", "volume-2"].includes(revised.phase)) continue;
+    if (
+      prescriptionSignature(workout.targets) !==
+      prescriptionSignature(createTargets(revised, DEFAULT_SETTINGS))
+    ) {
+      originalWeeks.add(revised.phase);
+    }
+  }
+  return PROGRAM_DAYS.map((item) =>
+    originalWeeks.has(item.phase)
+      ? ORIGINAL_PROGRAM_DAYS.find((original) => original.date === item.date)!
+      : item,
+  );
+}
+
+export interface ScheduleChange {
+  date: string;
+  before: ProgramDay;
+  after: ProgramDay;
+}
+
+/** Review only future, unstarted prescriptions; active/historical snapshots stay intact. */
+export function previewScheduleChanges(
+  workouts: readonly Workout[],
+  fromDate = todayDate(),
+): ScheduleChange[] {
+  const storedDates = new Set(workouts.map((workout) => workout.date));
+  return programDaysForWorkouts(workouts).flatMap((after) => {
+    if (after.date < fromDate || storedDates.has(after.date)) return [];
+    const before = ORIGINAL_PROGRAM_DAYS.find(
+      (item) => item.date === after.date,
+    )!;
+    return prescriptionSignature(createTargets(before, DEFAULT_SETTINGS)) ===
+      prescriptionSignature(createTargets(after, DEFAULT_SETTINGS))
+      ? []
+      : [{ date: after.date, before, after }];
+  });
+}
+
+export function getProgramDay(
+  date: string,
+  workouts: readonly Workout[] = [],
+): ProgramDay | undefined {
+  const saved = workouts.find((workout) => workout.date === date);
+  if (saved) {
+    const signature = prescriptionSignature(saved.targets);
+    const matchingDay = [PROGRAM_DAYS, ORIGINAL_PROGRAM_DAYS]
+      .map((days) => days.find((item) => item.date === date))
+      .find(
+        (item) =>
+          item &&
+          prescriptionSignature(createTargets(item, DEFAULT_SETTINGS)) ===
+            signature,
+      );
+    if (matchingDay) return matchingDay;
+  }
+  return programDaysForWorkouts(workouts).find((item) => item.date === date);
 }
 
 export function formatRule(
@@ -422,29 +546,29 @@ export function previewTrainingMaxChange(
     trainingMaxes: { ...settings.trainingMaxes, [lift]: next },
   };
   const startedDates = new Set(workouts.map((workout) => workout.date));
-  return PROGRAM_DAYS.filter(
-    (item) => item.date >= fromDate && !startedDates.has(item.date),
-  ).flatMap((item) =>
-    item.blocks
-      .filter((block) => block.lift === lift && block.percent !== undefined)
-      .flatMap((block) => {
-        const before = calculateWorkingWeight(block, settings);
-        const after = calculateWorkingWeight(block, revised);
-        return before === after
-          ? []
-          : [
-              {
-                date: item.date,
-                blockId: block.id,
-                lift,
-                rule: formatRule(block),
-                before,
-                after,
-                unit: settings.unit,
-              },
-            ];
-      }),
-  );
+  return programDaysForWorkouts(workouts)
+    .filter((item) => item.date >= fromDate && !startedDates.has(item.date))
+    .flatMap((item) =>
+      item.blocks
+        .filter((block) => block.lift === lift && block.percent !== undefined)
+        .flatMap((block) => {
+          const before = calculateWorkingWeight(block, settings);
+          const after = calculateWorkingWeight(block, revised);
+          return before === after
+            ? []
+            : [
+                {
+                  date: item.date,
+                  blockId: block.id,
+                  lift,
+                  rule: formatRule(block),
+                  before,
+                  after,
+                  unit: settings.unit,
+                },
+              ];
+        }),
+    );
 }
 
 export function validateSet(workout: Workout, logged: LoggedSet): string[] {

@@ -1472,3 +1472,22 @@ select:focus-visible {
 .screen-fieldset:disabled {
   opacity: 0.75;
 }
+
+.schedule-revision > p {
+  margin-top: 12px;
+}
+.schedule-changes > div {
+  border-top: 1px solid var(--border);
+  padding: 14px 0;
+}
+.schedule-changes h3 {
+  font-size: 21px;
+  margin-bottom: 8px;
+}
+.schedule-changes p {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.schedule-changes p + p {
+  margin-top: 8px;
+}

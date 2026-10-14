@@ -1,6 +1,6 @@
 import { IDBFactory, IDBObjectStore as FakeObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS, PROGRAM_DAYS, finishWorkout, logSet, startWorkout } from '../src/domain/program';
+import { DEFAULT_SETTINGS, ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, finishWorkout, logSet, programDaysForWorkouts, startWorkout } from '../src/domain/program';
 import type { Settings, Workout } from '../src/domain/types';
 import {
   DATABASE_NAME, LOCAL_ACCOUNT_ID, MAX_BACKUP_BYTES, createInitialState, enqueueWorkout,
@@ -320,5 +320,32 @@ describe('durable outbox', () => {
     const again = importBackup(exportBackup(queued), restored);
     expect(again.state.outbox).toHaveLength(1);
     expect(again.report.addedOutboxEntries).toBe(0);
+  });
+
+  it('keeps original workout targets, actuals, and queued revisions intact when applying the revised calendar', async () => {
+    const originalDay = ORIGINAL_PROGRAM_DAYS.find(day => day.date === '2026-10-19')!;
+    let original = startWorkout(originalDay, settings(), LOCAL_ACCOUNT_ID, NOW);
+    const target = original.targets[5];
+    original = logSet(original, {
+      id: 'legacy-squat-set', targetId: target.id, lift: 'squat', weight: 195, unit: 'lb', reps: 5,
+      outcome: 'failed', notes: 'Actual legacy squat set', pain: false, loggedAt: NOW.toISOString(),
+    });
+    const finished = finishWorkout(original, NOW);
+    const queued = enqueueWorkout({ ...createInitialState(settings()), workouts: [original] }, finished, { status: 'pending', now: NOW });
+    const before = structuredClone(queued);
+    const effective = programDaysForWorkouts(queued.workouts);
+    expect(effective.find(day => day.date === '2026-10-20')?.blocks.map(block => block.lift)).toEqual(['bench']);
+    expect(effective.find(day => day.date === '2026-10-27')?.blocks.map(block => block.lift)).toEqual(['squat', 'bench']);
+    expect(queued).toEqual(before);
+    await saveAppState(queued);
+    const reopened = (await loadAppState())!;
+    const restored = importBackup(exportBackup(reopened), createInitialState(DEFAULT_SETTINGS)).state;
+    expect(restored.workouts).toEqual(before.workouts);
+    expect(restored.outbox).toEqual(before.outbox);
+    expect(restored.workouts[0].targets).toHaveLength(8);
+    expect(restored.workouts[0].sets[0]).toMatchObject({ lift: 'squat', weight: 195, reps: 5, outcome: 'failed' });
+    expect(restored.outbox[0].snapshot.targets).toEqual(original.targets);
+    expect(restored.outbox[0].snapshot.sets).toEqual(original.sets);
+    expect(programDaysForWorkouts(restored.workouts)).toEqual(effective);
   });
 });

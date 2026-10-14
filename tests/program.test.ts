@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   addDays, addWarmup, calculateWorkingWeight, confirmCalibrationTrainingMax, convertWeight,
   createTargets, DEFAULT_SETTINGS, emptyMeetAttempts, finishWorkout, formatRule, getProgramDay,
-  isDateOnly, logSet, meetTotal, missingTrainingMaxes, prescribedReps, previewTrainingMaxChange,
-  PROGRAM_DAYS, roundToIncrement, skipWorkout, startWorkout, todayDate, undoSet, validateSet, workoutSummary,
+  isDateOnly, logSet, meetTotal, missingTrainingMaxes, prescribedReps, previewScheduleChanges, previewTrainingMaxChange,
+  ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, programDaysForWorkouts, roundToIncrement, skipWorkout, startWorkout, todayDate, undoSet, validateSet, workoutSummary,
 } from '../src/domain/program';
 import type { Lift, LoggedSet, Settings, Workout } from '../src/domain/types';
+import { createInitialState, enqueueWorkout } from '../src/storage';
 
 const at = new Date('2026-10-14T14:00:00.000Z');
 const tm = (weight = 285) => ({ weight, unit: 'lb' as const, confirmedAt: at.toISOString(), calibrationRpe: 7 });
@@ -24,7 +25,7 @@ const set = (workout: Workout, index = 0, values: Partial<LoggedSet> = {}): Logg
   };
 };
 
-describe('the exact immutable meet-prep schedule', () => {
+describe('the confirmed immutable meet-prep schedule', () => {
   it('contains every date October 14–November 15, in order, including recovery days', () => {
     expect(PROGRAM_DAYS).toHaveLength(33);
     expect(PROGRAM_DAYS.map(day => day.date)).toEqual(Array.from({ length: 33 }, (_, index) => addDays('2026-10-14', index)));
@@ -62,12 +63,12 @@ describe('the exact immutable meet-prep schedule', () => {
     const week = PROGRAM_DAYS.filter(day => day.phase === phase);
     expect(week.filter(day => day.blocks.length)).toHaveLength(6);
     const expectedBlocks = [
-      [['deadlift', 5, 3, 85], ['squat', 3, 6, 70]],
-      [['bench', 3, 6, 70]],
+      [['deadlift', 5, 3, 85]],
+      [['squat', 3, 6, 70], ['bench', 3, 6, 70]],
       [['squat', 4, 5, 75], ['bench', 4, 5, 75]],
-      [['squat', 4, 4, 80], ['deadlift', 3, 6, 70]],
-      [['bench', 4, 4, 80]],
-      [['squat', 5, 3, 85], ['bench', 5, 3, 85]],
+      [['deadlift', 3, 6, 70], ['bench', 5, 3, 85]],
+      [['squat', 4, 4, 80], ['bench', 4, 4, 80]],
+      [['squat', 5, 3, 85]],
       [],
     ];
     expect(week.map(day => day.blocks.map(block => [block.lift, block.sets, block.reps, block.percent]))).toEqual(expectedBlocks);
@@ -78,6 +79,18 @@ describe('the exact immutable meet-prep schedule', () => {
     expect(week.filter(day => day.optionalAccessories).map(day => day.date)).toEqual(phase === 'volume-1' ? ['2026-10-20', '2026-10-23'] : ['2026-10-27', '2026-10-30']);
   });
 
+  it('puts bench second on every paired volume day and leaves heavy squat alone', () => {
+    for (const phase of ['volume-1', 'volume-2'] as const) {
+      const week = PROGRAM_DAYS.filter(day => day.phase === phase);
+      expect(week.filter(day => day.blocks.length === 2).every(day => day.blocks[1].lift === 'bench')).toBe(true);
+      const lightDeadlift = week.find(day => day.blocks.some(block => block.lift === 'deadlift' && block.percent === 70))!;
+      expect(lightDeadlift.blocks.map(block => block.lift)).toEqual(['deadlift', 'bench']);
+      expect(lightDeadlift.blocks[1]).toMatchObject({ sets: 5, reps: 3, percent: 85 });
+      const heavySquat = week.find(day => day.blocks.some(block => block.lift === 'squat' && block.percent === 85))!;
+      expect(heavySquat.blocks).toHaveLength(1);
+    }
+  });
+
   it('requests RPE on exactly the calibration and final heavy singles', () => {
     const targeted = PROGRAM_DAYS.flatMap(day => day.blocks).filter(block => block.rpeTarget);
     expect(targeted).toHaveLength(6);
@@ -85,6 +98,121 @@ describe('the exact immutable meet-prep schedule', () => {
     const working = PROGRAM_DAYS.flatMap(day => day.blocks).filter(block => block.kind === 'working');
     expect(working.every(block => block.rpeTarget === undefined)).toBe(true);
     expect(programDay('2026-11-02').blocks.every(block => block.percent !== undefined && !block.rpeTarget)).toBe(true);
+  });
+});
+
+describe('schedule changes around saved volume weeks', () => {
+  const originalDay = (date: string) => ORIGINAL_PROGRAM_DAYS.find(day => day.date === date)!;
+  const volumeWeek = (days: typeof PROGRAM_DAYS, phase: 'volume-1' | 'volume-2') => days.filter(day => day.phase === phase);
+
+  it('retains frozen original definitions for every old volume prescription', () => {
+    const originalBlocks = [
+      [['deadlift', 5, 3, 85], ['squat', 3, 6, 70]],
+      [['bench', 3, 6, 70]],
+      [['squat', 4, 5, 75], ['bench', 4, 5, 75]],
+      [['squat', 4, 4, 80], ['deadlift', 3, 6, 70]],
+      [['bench', 4, 4, 80]],
+      [['squat', 5, 3, 85], ['bench', 5, 3, 85]],
+      [],
+    ];
+    expect(Object.isFrozen(ORIGINAL_PROGRAM_DAYS)).toBe(true);
+    for (const phase of ['volume-1', 'volume-2'] as const) {
+      const week = volumeWeek(ORIGINAL_PROGRAM_DAYS, phase);
+      expect(week.map(day => day.blocks.map(block => [block.lift, block.sets, block.reps, block.percent]))).toEqual(originalBlocks);
+      expect(prescribedReps(week)).toEqual({ squat: 69, bench: 69, deadlift: 33, combined: 171 });
+      expect(week.every(day => Object.isFrozen(day) && Object.isFrozen(day.blocks) && day.blocks.every(Object.isFrozen))).toBe(true);
+      for (const day of week) for (const block of day.blocks) {
+        expect(block.offsetLb ?? 0).toBe(phase === 'volume-2' && block.lift !== 'deadlift' ? 5 : 0);
+      }
+    }
+    expect(ORIGINAL_PROGRAM_DAYS.filter(day => !day.phase.startsWith('volume-'))).toEqual(PROGRAM_DAYS.filter(day => !day.phase.startsWith('volume-')));
+  });
+
+  it('keeps the entire old active week together while applying the revised next week', () => {
+    const active = startWorkout(originalDay('2026-10-19'), settings(), 'local', at);
+    const snapshot = structuredClone(active);
+    const effective = programDaysForWorkouts([active]);
+    expect(volumeWeek(effective, 'volume-1')).toEqual(volumeWeek(ORIGINAL_PROGRAM_DAYS, 'volume-1'));
+    expect(volumeWeek(effective, 'volume-2')).toEqual(volumeWeek(PROGRAM_DAYS, 'volume-2'));
+    expect(getProgramDay('2026-10-20', [active])).toEqual(originalDay('2026-10-20'));
+    expect(getProgramDay('2026-10-27', [active])).toEqual(programDay('2026-10-27'));
+    expect(prescribedReps(volumeWeek(effective, 'volume-1'))).toEqual({ squat: 69, bench: 69, deadlift: 33, combined: 171 });
+    expect(active).toEqual(snapshot);
+  });
+
+  it('preserves a started original second week independently of the first week', () => {
+    const historical = finishWorkout(startWorkout(originalDay('2026-10-29'), settings(), 'local', at), at);
+    const effective = programDaysForWorkouts([historical]);
+    expect(volumeWeek(effective, 'volume-1')).toEqual(volumeWeek(PROGRAM_DAYS, 'volume-1'));
+    expect(volumeWeek(effective, 'volume-2')).toEqual(volumeWeek(ORIGINAL_PROGRAM_DAYS, 'volume-2'));
+    expect(effective.filter(day => !day.phase.startsWith('volume-'))).toEqual(PROGRAM_DAYS.filter(day => !day.phase.startsWith('volume-')));
+  });
+
+  it('does not revert a week after a revised workout has started', () => {
+    const active = startWorkout(programDay('2026-10-20'), settings(), 'local', at);
+    expect(active.targets.map(target => target.lift)).toEqual(['squat', 'squat', 'squat', 'bench', 'bench', 'bench']);
+    expect(programDaysForWorkouts([active])).toEqual(PROGRAM_DAYS);
+    expect(getProgramDay('2026-10-22', [active])?.blocks.map(block => block.lift)).toEqual(['deadlift', 'bench']);
+    expect(getProgramDay('2026-10-24', [active])?.blocks.map(block => block.lift)).toEqual(['squat']);
+  });
+
+  it('shows each saved layout after importing original history into a revised week', () => {
+    const original = startWorkout(originalDay('2026-10-19'), settings(), 'local', at);
+    let revised = startWorkout(programDay('2026-10-20'), settings(), 'local', at);
+    revised = logSet(revised, set(revised, 3, { weight: 195, reps: 4, notes: 'Saved revised bench' }));
+    revised = finishWorkout(revised, at);
+    const queued = enqueueWorkout({ ...createInitialState(settings()), workouts: [original, revised] }, revised, { status: 'pending', now: at });
+    const before = structuredClone(queued);
+
+    expect(getProgramDay('2026-10-19', queued.workouts)).toEqual(originalDay('2026-10-19'));
+    expect(getProgramDay('2026-10-20', queued.workouts)).toEqual(programDay('2026-10-20'));
+    expect(getProgramDay('2026-10-20', queued.workouts)?.blocks.map(block => block.lift)).toEqual(['squat', 'bench']);
+    expect(getProgramDay('2026-10-22', queued.workouts)).toEqual(originalDay('2026-10-22'));
+    expect(getProgramDay('2026-10-27', queued.workouts)).toEqual(programDay('2026-10-27'));
+    expect(volumeWeek(programDaysForWorkouts(queued.workouts), 'volume-1')).toEqual(volumeWeek(ORIGINAL_PROGRAM_DAYS, 'volume-1'));
+    expect(queued).toEqual(before);
+    expect(queued.workouts[1].sets[0]).toMatchObject({ lift: 'bench', weight: 195, reps: 4 });
+    expect(queued.outbox[0].snapshot).toEqual(before.outbox[0].snapshot);
+  });
+
+  it('does not mistake warm-ups, loading preferences, or performed-set edits for a legacy schedule', () => {
+    const config = { ...settings(), unit: 'kg' as const, increment: 2.5 };
+    let active = addWarmup(startWorkout(programDay('2026-10-22'), config, 'local', at), 'bench', 5, 20, 'kg');
+    active = logSet(active, set(active, 0, { weight: 70, reps: 4 }));
+    active.targets[0].weight = 72.5;
+    const before = structuredClone(active);
+    expect(programDaysForWorkouts([active])).toEqual(PROGRAM_DAYS);
+    expect(active).toEqual(before);
+  });
+
+  it('uses the preserved calendar when previewing unstarted TM changes', () => {
+    const legacy = startWorkout(originalDay('2026-10-19'), settings(), 'local', at);
+    const before = structuredClone(legacy);
+    const changes = previewTrainingMaxChange('bench', tm(300), settings(), [legacy], '2026-10-14');
+    const dates = [...new Set(changes.map(change => change.date))];
+    expect(dates).toContain('2026-10-24');
+    expect(dates).not.toContain('2026-10-22');
+    expect(dates).toContain('2026-10-29');
+    expect(dates).not.toContain('2026-10-31');
+    expect(legacy).toEqual(before);
+  });
+
+  it('previews only changed, future, unstarted days outside a retained legacy week', () => {
+    const allChanges = previewScheduleChanges([], '2026-10-14');
+    expect(allChanges.map(change => change.date)).toEqual([
+      '2026-10-19', '2026-10-20', '2026-10-22', '2026-10-23', '2026-10-24',
+      '2026-10-26', '2026-10-27', '2026-10-29', '2026-10-30', '2026-10-31',
+    ]);
+    expect(allChanges.find(change => change.date === '2026-10-22')).toMatchObject({
+      before: { blocks: [{ lift: 'squat' }, { lift: 'deadlift' }] },
+      after: { blocks: [{ lift: 'deadlift' }, { lift: 'bench' }] },
+    });
+    const legacy = startWorkout(originalDay('2026-10-19'), settings(), 'local', at);
+    expect(previewScheduleChanges([legacy], '2026-10-14').map(change => change.date)).toEqual([
+      '2026-10-26', '2026-10-27', '2026-10-29', '2026-10-30', '2026-10-31',
+    ]);
+    const revised = startWorkout(programDay('2026-10-30'), settings(), 'local', at);
+    expect(previewScheduleChanges([legacy, revised], '2026-10-30').map(change => change.date)).toEqual(['2026-10-31']);
   });
 });
 
@@ -126,7 +254,8 @@ describe('training weights and date-only integrity', () => {
   });
 
   it('guards only percentage-based sessions when a TM is absent', () => {
-    expect(missingTrainingMaxes(programDay('2026-10-19'), DEFAULT_SETTINGS)).toEqual(['squat', 'deadlift']);
+    expect(missingTrainingMaxes(programDay('2026-10-19'), DEFAULT_SETTINGS)).toEqual(['deadlift']);
+    expect(missingTrainingMaxes(programDay('2026-10-20'), DEFAULT_SETTINGS)).toEqual(['squat', 'bench']);
     expect(() => startWorkout(programDay('2026-10-19'), DEFAULT_SETTINGS, 'local', at)).toThrow('training max');
     expect(() => startWorkout(programDay('2026-10-14'), DEFAULT_SETTINGS, 'local', at)).not.toThrow();
     expect(startWorkout(programDay('2026-10-14'), DEFAULT_SETTINGS, 'local', at).targets[0].weight).toBeNull();
@@ -173,7 +302,7 @@ describe('actual performance and durable snapshot data', () => {
     expect(logged.sets[0]).toMatchObject({ weight: 195, reps: 4, pain: true });
     expect(logged.accountId).toBe('account-a');
     expect(logged.revision).toBe(1);
-    expect(workoutSummary(logged)).toMatchObject({ plannedSets: 3, loggedSets: 1, completedReps: 4, remainingSets: 2 });
+    expect(workoutSummary(logged)).toMatchObject({ plannedSets: 6, loggedSets: 1, completedReps: 4, remainingSets: 5 });
     expect(() => logSet(initial, set(initial, 0, { weight: 0 }))).toThrow('actual weight lifted');
   });
 
@@ -181,7 +310,7 @@ describe('actual performance and durable snapshot data', () => {
     let workout = startWorkout(programDay('2026-10-20'), settings(), 'local', at);
     workout = logSet(workout, set(workout, 0, { outcome: 'failed', reps: 2 }));
     workout = logSet(workout, set(workout, 1, { outcome: 'skipped', reps: 0 }));
-    expect(workoutSummary(workout)).toMatchObject({ failedSets: 1, skippedSets: 1, actualReps: 2, completedReps: 0, remainingSets: 1 });
+    expect(workoutSummary(workout)).toMatchObject({ failedSets: 1, skippedSets: 1, actualReps: 2, completedReps: 0, remainingSets: 4 });
     expect(finishWorkout(workout, at).status).toBe('partial');
     expect(() => logSet(workout, set(workout, 2, { outcome: 'skipped', reps: 6 }))).toThrow('zero actual reps');
   });
@@ -211,10 +340,10 @@ describe('actual performance and durable snapshot data', () => {
 
   it('separates optional warm-ups from prescribed volume and working progress', () => {
     let workout = addWarmup(startWorkout(programDay('2026-10-20'), settings(), 'local', at), 'bench', 5, 95, 'lb');
-    workout = logSet(workout, set(workout, 3));
-    expect(workout.targets[3]).toMatchObject({ kind: 'warmup', rule: 'Optional warm-up' });
-    expect(workout.targets[3].rpeTarget).toBeUndefined();
-    expect(workoutSummary(workout)).toMatchObject({ plannedSets: 3, completedSets: 0, actualReps: 0, warmupSets: 1 });
+    workout = logSet(workout, set(workout, 6));
+    expect(workout.targets[6]).toMatchObject({ kind: 'warmup', rule: 'Optional warm-up' });
+    expect(workout.targets[6].rpeTarget).toBeUndefined();
+    expect(workoutSummary(workout)).toMatchObject({ plannedSets: 6, completedSets: 0, actualReps: 0, warmupSets: 1 });
     expect(prescribedReps(PROGRAM_DAYS.filter(day => day.phase === 'volume-1')).combined).toBe(171);
   });
 
