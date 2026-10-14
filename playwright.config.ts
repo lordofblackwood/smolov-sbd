@@ -1,5 +1,9 @@
 import { defineConfig } from '@playwright/test';
 
+const configuredPath = process.env.TEST_BASE_PATH?.replace(/^\/+|\/+$/g, '');
+const basePath = configuredPath ? `/${configuredPath}/` : '/';
+const baseURL = `http://127.0.0.1:4173${basePath}`;
+
 export default defineConfig({
   testDir: './tests',
   testMatch: 'workflow.spec.ts',
@@ -11,7 +15,7 @@ export default defineConfig({
   reporter: 'list',
   outputDir: '/private/tmp/smolov-sbd-playwright-results',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL,
     browserName: 'chromium',
     headless: true,
     serviceWorkers: 'allow',
@@ -27,8 +31,8 @@ export default defineConfig({
     { name: 'mobile', use: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } },
   ],
   webServer: {
-    command: 'npm run preview -- --port 4173 --strictPort',
-    url: 'http://127.0.0.1:4173',
+    command: `npm run preview -- --port 4173 --strictPort --base '${basePath.replace(/'/g, "'\\''")}'`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },

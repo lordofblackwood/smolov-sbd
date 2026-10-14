@@ -24,7 +24,7 @@ const sources = [
     "smolov",
     "Smolov SBD",
     "Actual squat, bench & deadlift sets and meet preparation",
-    "https://smolov-sbd.micak27.chatgpt.site/",
+    "https://lordofblackwood.github.io/smolov-sbd/",
   ],
 ];
 export function Connect({ store, onDemo, install }) {

@@ -18,7 +18,7 @@ The Codex in-app browser loaded the production preview, checked the full schedul
 
 The primary phone comparison is at 430×932 CSS pixels against the two-screen concept's phone composition, with additional 360px/390px checks and a 1440×1000 desktop check. The generated raster's combined1536×1024 board includes two phone screens; forcing the entire board width onto one phone would not represent its intended layout. `view_image` directly inspects the concept and the final actual phone screenshots.
 
-Final automated results:85 unit/integration/storage tests and11 production browser tests passed. The one desktop skip is the phone-only430/360 size test. The in-app browser navigation and console checks passed.
+Final automated results:85 unit/integration/storage tests and13 production browser tests passed. The one desktop skip is the phone-only430/360 size test. The in-app browser navigation and console checks passed.
 
 ## Fidelity ledger
 
@@ -33,3 +33,7 @@ Final automated results:85 unit/integration/storage tests and11 production brows
 | Responsive/interaction | Phone/desktop overflow checks, keyboard focus/labels, actual logging/resume/offline/timer/backup/meet and two-tab checks run against the production build. |
 
 The rendered implementation was faithfully checked against this design with the documented schedule and functional adaptations. No decorative media is required for the workout tool. Physical phone installation and personal-account upload behavior are not represented by the browser checks.
+
+## GitHub Pages migration
+
+The complete production browser workflow also passed at `/smolov-sbd/`, including manifest/icons, service-worker script/scope, all precache URLs, and offline new-tab reopening. Every Smolov shell asset stays under its own subpath on the shared GitHub Pages origin. The prior85 automated tests still pass; the expanded Pages suite passed13 browser tests with1 intentional phone-only desktop skip. Hosting changes preserve the existing interface and workout definitions.

@@ -59,20 +59,60 @@ async function beginVolumeSession(page: Page) {
   await expect(page.getByText('0 of 8 sets logged', { exact: true })).toBeVisible();
 }
 
-test.beforeEach(async ({ page, context }) => {
+test.beforeEach(async ({ page, context, baseURL }) => {
   // The test date controls scheduled UI only; no fixture workouts are seeded.
   await page.clock.setFixedTime(trainingDate);
   await context.route('**/*', async route => {
-    if (new URL(route.request().url()).origin === 'http://127.0.0.1:4173') await route.continue();
+    if (new URL(route.request().url()).origin === new URL(baseURL!).origin) await route.continue();
     else await route.abort('blockedbyclient');
   });
+});
+
+test('install assets and offline worker stay inside the app’s hosting path', async ({ page, baseURL }) => {
+  const appURL = new URL(baseURL!);
+  await page.goto('./');
+  const manifestHref = await page.locator('link[rel="manifest"]').getAttribute('href');
+  const manifestURL = new URL(manifestHref!, page.url());
+  expect(manifestURL.origin).toBe(appURL.origin);
+  expect(manifestURL.pathname.startsWith(appURL.pathname)).toBe(true);
+  const manifestResponse = await page.request.get(manifestURL.href);
+  expect(manifestResponse.ok()).toBe(true);
+  const manifest = await manifestResponse.json() as { start_url: string; scope: string; icons: { src: string }[] };
+  expect(new URL(manifest.start_url, manifestURL).href).toBe(appURL.href);
+  expect(new URL(manifest.scope, manifestURL).href).toBe(appURL.href);
+  for (const icon of manifest.icons) {
+    const iconURL = new URL(icon.src, manifestURL);
+    expect(iconURL.origin).toBe(appURL.origin);
+    expect(iconURL.pathname.startsWith(appURL.pathname)).toBe(true);
+    const response = await page.request.get(iconURL.href);
+    expect(response.ok()).toBe(true);
+    expect(response.headers()['content-type']).toContain('image/png');
+  }
+  const appleIconHref = await page.locator('link[rel="apple-touch-icon"]').getAttribute('href');
+  expect(new URL(appleIconHref!, page.url()).pathname.startsWith(appURL.pathname)).toBe(true);
+  await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL)).toBe(`${appURL.href}sw.js`);
+  const registration = await page.evaluate(async () => {
+    const active = await navigator.serviceWorker.ready;
+    return { scope: active.scope, scriptURL: active.active?.scriptURL };
+  });
+  expect(registration).toEqual({ scope: appURL.href, scriptURL: `${appURL.href}sw.js` });
+  const cachedURLs = await page.evaluate(async () => {
+    const names = (await caches.keys()).filter(name => name.startsWith('smolov-sbd-shell'));
+    return (await Promise.all(names.map(async name => (await (await caches.open(name)).keys()).map(request => request.url)))).flat();
+  });
+  expect(cachedURLs.length).toBeGreaterThan(0);
+  expect(cachedURLs.every(url => {
+    const cachedURL = new URL(url);
+    return cachedURL.origin === appURL.origin && cachedURL.pathname.startsWith(appURL.pathname);
+  })).toBe(true);
 });
 
 test('production app renders an accessible phone layout and truthful empty state', async ({ page }, info) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-  await page.goto('/');
+  await page.goto('./');
   await expect(page).toHaveTitle('Smolov SBD · Meet Prep');
   await expect(page.getByRole('heading', { name: 'Today’s training', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Confirm training maxes', exact: true })).toBeVisible();
@@ -93,7 +133,7 @@ test('production app renders an accessible phone layout and truthful empty state
 });
 
 test('logs actual sets, refreshes, finishes offline, reopens offline, and merges backup duplicates', async ({ page, context }, info) => {
-  await page.goto('/');
+  await page.goto('./');
   await beginVolumeSession(page);
   await expect(page.getByRole('spinbutton', { name: /RPE/ })).toHaveCount(0);
   await page.getByRole('button', { name: 'Complete Deadlift set 1', exact: true }).click();
@@ -158,7 +198,7 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   expect(finished?.outbox[0].status).toBe('needs-attention');
 
   const reopened = await context.newPage();
-  await reopened.goto('/');
+  await reopened.goto('./');
   await expect(reopened.getByRole('heading', { name: 'Today’s training', level: 1 })).toBeVisible();
   await navigate(reopened, 'History');
   await expect(reopened.locator('.history-session')).toHaveCount(1);
@@ -185,7 +225,7 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
 });
 
 test('meet results preserve mixed units and require a successful attempt in all lifts', async ({ page }, info) => {
-  await page.goto('/');
+  await page.goto('./');
   await openDay(page, 'Nov 15');
   await expect(page.getByRole('heading', { name: 'Awaiting successful lifts', exact: true })).toBeVisible();
   await expect(page.getByRole('spinbutton', { name: /attempt \d weight/ })).toHaveCount(9);
@@ -218,7 +258,7 @@ test('meet results preserve mixed units and require a successful attempt in all 
 });
 
 test('backup preference restore previews future targets and preserves the active workout in its original units', async ({ page }, info) => {
-  await page.goto('/');
+  await page.goto('./');
   await beginVolumeSession(page);
   await expect.poll(async () => (await readState(page))?.workouts.length).toBe(1);
   const original = (await readState(page))!.workouts[0];
@@ -275,7 +315,7 @@ test('calibration screens stay unfilled and fit 430 and 360 pixel phones', async
   test.skip(info.project.name !== 'mobile', 'Phone widths are covered by the mobile project.');
   await page.clock.setFixedTime(new Date('2026-10-14T12:00:00.000Z'));
   await page.setViewportSize({ width: 430, height: 932 });
-  await page.goto('/');
+  await page.goto('./');
   await expect(page.getByRole('heading', { name: 'Today’s training', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Start workout', exact: true })).toBeVisible();
   await noHorizontalOverflow(page);
@@ -307,14 +347,14 @@ test('calibration screens stay unfilled and fit 430 and 360 pixel phones', async
 });
 
 test('a second tab reads safely and reloads saved state before acquiring the editing lock', async ({ page, context }) => {
-  await page.goto('/');
+  await page.goto('./');
   await beginVolumeSession(page);
   await page.getByRole('button', { name: 'Complete Deadlift set 1', exact: true }).click();
   await expect.poll(async () => (await readState(page))?.workouts[0]?.sets.length).toBe(1);
   const original = (await readState(page))!.workouts[0];
   const second = await context.newPage();
   await second.clock.setFixedTime(new Date(trainingDate.getTime() + 10_000));
-  await second.goto('/');
+  await second.goto('./');
   const readonly = second.getByText('Another Smolov tab is saving changes. Close that tab, then retry here.');
   await expect(readonly).toBeVisible();
   await navigate(second, 'History');

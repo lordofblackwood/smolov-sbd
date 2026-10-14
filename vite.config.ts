@@ -1,9 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
-const base = process.env.BASE_PATH
-  ? `/${process.env.BASE_PATH.replace(/^\/+|\/+$/g, "")}/`
-  : "/";
+const configuredPath = (process.env.BASE_PATH ?? "").replace(/^\/+|\/+$/g, "");
+const base = configuredPath ? `/${configuredPath}/` : "/";
 export default defineConfig({
   base,
   plugins: [

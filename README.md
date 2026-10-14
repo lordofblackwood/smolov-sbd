@@ -18,11 +18,17 @@ npm run e2e
 
 Development serves localhost:5173. The preview serves the production app, including the service worker. Browser tests run at 127.0.0.1:4173 with isolated IndexedDB and external requests blocked. Install Playwright's Chromium using `npx playwright install chromium` if it is absent; `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/absolute/path/to/chromium npm run e2e` uses an existing installation. No tests write workouts to live accounts.
 
-The `dist` directory is a static deployment. Serve it over HTTPS (localhost is permitted for development), with `index.html` as the application fallback. The included `.openai/hosting.json` binds this checkout to its existing private Sites project. Use the Sites publishing workflow for that project; do not register another site. GitHub Pages or other subpath deployments can build with:
+The PWA is hosted on **GitHub Pages** at [lordofblackwood.github.io/smolov-sbd/](https://lordofblackwood.github.io/smolov-sbd/), with source in [lordofblackwood/smolov-sbd](https://github.com/lordofblackwood/smolov-sbd). The existing Sites service hosts only the encrypted Powerlevel connector. There is no ChatGPT sign-in requirement for the tracker itself.
+
+The workflow in `.github/workflows/pages.yml` type-checks, tests, builds and deploys `main` through GitHub Actions. It obtains the actual Pages base path from `actions/configure-pages`, so the manifest, service worker, icons and assets stay inside the project subdirectory. Set the repository's Pages source to **GitHub Actions**. No application secrets are required in the repository or workflow. To rehearse the deployed subpath locally:
 
 ```sh
-BASE_PATH=smolov-sbd npm run build
+BASE_PATH=/smolov-sbd/ npm run build
+BASE_PATH=/smolov-sbd/ npm run preview -- --port 4173
+TEST_BASE_PATH=/smolov-sbd/ npm run e2e
 ```
+
+The `dist` output can also be served by a static HTTPS host; localhost is permitted for development. Do not use Sites publishing for this frontend. The earlier Sites URL is retained only for recovering any browser-local records created there. Export its JSON backup, then open the GitHub Pages tracker, pair the same Powerlevel code if previously paired, and import the backup. Cross-origin local data cannot move automatically. Backups exclude connection codes.
 
 Keep a dedicated subpath/origin: the manifest, app assets and service-worker scope use the configured base. This service worker precaches only the app shell/assets, not authenticated API responses or connection credentials. An update waits for user action and is disabled while a workout is active or a local save is pending.
 
@@ -50,7 +56,7 @@ See [integration documentation](docs/powerlevel-integration.md) for the live dep
 
 ## Verification
 
-Final checks: 85 automated tests, type checking and production build pass; 11 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
+Final checks: 85 automated tests, type checking and production build pass; 13 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
 
 The automated suite covers the exact schedule/order/reps; half-up loading and Week 2 offsets; RPE restrictions; null default TMs; snapshot integrity; timezone/DST; actual logging/edit/undo/failure/skip; warm-ups; IndexedDB failure/reopen/account separation; conservative backups; rest timers; conditional sync/revisions/concurrent writers/authentication/ambiguous reconciliation; and mixed-unit meet totals.
 
