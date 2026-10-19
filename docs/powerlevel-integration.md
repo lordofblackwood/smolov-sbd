@@ -41,6 +41,18 @@ After the user explicitly approved publishing both existing-app updates, the rel
 
 ## Mapping, corrections and retries
 
+### Snapshot ETag recovery (October 19, 2026)
+
+A reported deadlift upload paused with `The relay did not return a safe snapshot ETag.` The adapter required a strong HTTP response ETag before dispatching an update. A missing or weakened header therefore blocked every subsequent update to an existing source even when its encrypted snapshot could be read and decrypted.
+
+Smolov GET responses now add `snapshotEtag` beside the unchanged ciphertext, taken from the exact R2 object returned by the same read. The root advertises `etagTransport: "snapshot-body"`. The tracker prefers that version and falls back to a strong HTTP ETag for older relay responses. It rejects weak, wildcard, malformed or missing versions and still sends the exact version in `If-Match`; storage preconditions remain atomic. Existing encrypted objects need no rewrite or migration. Other source responses keep their original format.
+
+Manual Retry sync reconciles every latest finished queued revision, including records previously acknowledged as synced. Identical remote evidence requires no PUT; remotely missing sessions are merged back without duplicating sets or overwriting newer revisions. Capability checks and upload results have separate messages in Settings, and History displays the upload result. Paused records still require explicit retry after updating the app.
+
+Regression tests simulate removed, weakened and replaced HTTP headers, invalid body versions, header-only older relays, atomic conflicts, account isolation and exact deduplication. An isolated browser test reproduces the reported error, retries the saved deadlift using the body version, restores a remotely missing acknowledged session and proves another retry performs no PUT. These tests never contact live accounts; the precise intermediary responsible for the reported header failure has not been inspected.
+
+The existing connector was published as version 4 on October 19, 2026, from source `7271c763e97d8892fecad831566e12686e4a3ed3`, deployment `appgdep_6ad695714cdc8191bad9b5d84294e558`. Its public audience, Site identity, R2 binding and storage keys are unchanged. A public root read confirmed `etagTransport: "snapshot-body"` after deployment. All 23 relay tests passed; real account uploads were not used for verification.
+
 `syncWorkout` receives the exact queued local revision, verifies that both the supplied code and immutable workout belong to the selected connection, then checks the relay's root capability. It will not discover or write a new source path until the service advertises its exact contract. Once supported, it reads/decrypts the current source, merges a whole session revision, and encrypts/PUTs only the independent source under a mandatory precondition.
 
 Stable session/set identities are retained. A remotely present identical revision is acknowledged without another upload. A correction replaces that session's prior revision while preserving other sessions; removed sets are removed from that session's snapshot. A newer or conflicting same-number remote revision pauses for reconciliation. Failed authentication pauses. A lost write response triggers read-back of the exact revision; an unavailable or inconclusive confirmation pauses the outbox and never blindly repeats the write. Only transient failures before dispatch may automatically retry on reopen/reconnection.

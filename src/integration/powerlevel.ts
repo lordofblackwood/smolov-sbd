@@ -457,13 +457,14 @@ async function readSmolov(
       "The Smolov history could not be read.",
       response.status,
     );
-  const snapshot = (await decryptSnapshot(
-    code,
-    await response.json(),
-    "smolov",
-  )) as SmolovSnapshot;
-  const etag = response.headers.get("ETag");
-  if (!etag || !/^"[^"\\]+"$/.test(etag))
+  const envelope = await response.json();
+  const snapshot = (await decryptSnapshot(code, envelope, "smolov")) as SmolovSnapshot;
+  // Hosting proxies can remove or weaken HTTP ETags. The relay also returns
+  // the same object's exact R2 version beside its ciphertext for safe If-Match.
+  const etag = envelope.snapshotEtag !== undefined
+    ? envelope.snapshotEtag
+    : response.headers.get("ETag");
+  if (typeof etag !== "string" || !/^"[\x21\x23-\x5b\x5d-\x7e\x80-\xff]+"$/.test(etag))
     throw new RelayError("The relay did not return a safe snapshot ETag.", 428);
   return { snapshot, etag, updatedAt: response.headers.get("X-Synced-At") };
 }

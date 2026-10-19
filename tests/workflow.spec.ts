@@ -4,25 +4,28 @@ import type { AppState } from '../src/storage/types';
 import { LOCAL_ACCOUNT_ID, createInitialState } from '../src/storage/types';
 import { DEFAULT_SETTINGS, ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, skipWorkout, startWorkout } from '../src/domain/program';
 import { exportBackup } from '../src/storage/backup';
+import { pairConnection, POWERLEVEL_ENDPOINT, snapshotForWorkout, type SmolovSnapshot } from '../src/integration/powerlevel';
+import { authFor, decryptSnapshot, encryptSnapshot, newCode } from '../src/integration/vendor/sync.mjs';
+import relayWorker from '../integrations/relay/src/worker.mjs';
 
 // Browser plugin not available. These isolated Chromium contexts exercise the real
 // production UI and IndexedDB. External origins are blocked; no live accounts are used.
 const trainingDate = new Date('2026-10-19T12:00:00.000Z');
 
-async function readState(page: Page): Promise<AppState | undefined> {
-  return page.evaluate(() => new Promise((resolve, reject) => {
+async function readState(page: Page, accountId = LOCAL_ACCOUNT_ID): Promise<AppState | undefined> {
+  return page.evaluate((scope) => new Promise((resolve, reject) => {
     const open = indexedDB.open('smolov-sbd-local', 1);
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const database = open.result;
       const transaction = database.transaction('account-state', 'readonly');
-      const request = transaction.objectStore('account-state').get('local-unpaired');
+      const request = transaction.objectStore('account-state').get(scope);
       let result: AppState | undefined;
       request.onsuccess = () => { result = request.result; };
       transaction.oncomplete = () => { database.close(); resolve(result); };
       transaction.onerror = () => { database.close(); reject(transaction.error); };
     };
-  })) as Promise<AppState | undefined>;
+  }), accountId) as Promise<AppState | undefined>;
 }
 
 async function navigate(page: Page, name: 'Today' | 'Program' | 'History' | 'Settings') {
@@ -346,6 +349,168 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   expect((await readState(page))?.workouts[0].targets).toEqual(before?.workouts[0].targets);
   await noHorizontalOverflow(page);
   await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-history.png`, fullPage: true, animations: 'disabled' });
+});
+
+test('paired deadlift resumes a missing-ETag upload and restores acknowledged history without duplicates', async ({ page, baseURL }, info) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  // Every relay request is fulfilled here. This generated connection and its
+  // encrypted fixture exist only in this isolated test, never a live account.
+  const code = newCode();
+  const connection = await pairConnection(code);
+  const authorization = `Bearer ${await authFor(code)}`;
+  const timestamp = '2026-10-16T12:00:00.000Z';
+  const unrelated: SmolovSnapshot = {
+    schema: 1, source: 'smolov', contract: 'smolov-v1',
+    sessions: [{
+      id: 'mock-bench-session', revision: 1, trainingDate: '2026-10-16', scheduledDate: '2026-10-16',
+      startedAt: timestamp, updatedAt: timestamp, finishedAt: timestamp, status: 'completed', notes: 'Unrelated mock history',
+    }],
+    events: [{
+      id: 'mock-bench-session:bench-single', source: 'smolov', sessionId: 'mock-bench-session', setId: 'bench-single', revision: 1,
+      date: '2026-10-16', occurredAt: timestamp, exercise: 'benchPress', name: 'Bench Press', weight: 185, unit: 'lb',
+      originalWeight: 185, originalUnit: 'lb', sets: 1, reps: 1, outcome: 'completed', success: true,
+      singleCompleted: true, countsDay: true, kind: 'calibration', notes: '', pain: false, rpe: 7,
+    }],
+  };
+  let remote = {
+    body: JSON.stringify(await encryptSnapshot(code, unrelated)),
+    httpEtag: '"mock-initial"', uploaded: trainingDate, customMetadata: { updatedAt: trainingDate.toISOString() },
+  };
+  let puts = 0;
+  let bodyEtagTransport = false;
+  const writeConditions: string[] = [];
+  const environment = { BUCKET: {
+    get: async (key: string) => {
+      expect(key.endsWith('/smolov.json')).toBe(true);
+      return remote;
+    },
+    put: async (key: string, body: string, options: { onlyIf: Headers; customMetadata: { updatedAt: string } }) => {
+      expect(key.endsWith('/smolov.json')).toBe(true);
+      if (options.onlyIf.get('If-Match') !== remote.httpEtag) return null;
+      writeConditions.push(options.onlyIf.get('If-Match')!);
+      puts++;
+      remote = { body, httpEtag: `"mock-write-${puts}"`, uploaded: trainingDate, customMetadata: options.customMetadata };
+      return remote;
+    },
+  } };
+  await page.route(`${POWERLEVEL_ENDPOINT}/**`, async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path !== '/' && request.method() !== 'OPTIONS') {
+      expect(path).toBe('/api/history/smolov');
+      expect(request.headers().authorization).toBe(authorization);
+    }
+    const response = await relayWorker.fetch(new Request(request.url(), {
+      method: request.method(), headers: request.headers(),
+      ...(request.method() === 'PUT' ? { body: request.postData() } : {}),
+    }), environment);
+    const headers = Object.fromEntries(response.headers);
+    let body = await response.text();
+    if (request.method() === 'GET' && path === '/api/history/smolov' && response.ok) {
+      const envelope = JSON.parse(body);
+      if (bodyEtagTransport) {
+        // A hosting proxy can rewrite or hide ETag; the body must preserve the
+        // exact storage token used for the subsequent conditional write.
+        headers.etag = 'W/"proxy-etag"';
+        expect(envelope.snapshotEtag).toBe(remote.httpEtag);
+      } else {
+        delete headers.etag;
+        delete envelope.snapshotEtag;
+      }
+      body = JSON.stringify(envelope);
+    }
+    await route.fulfill({ status: response.status, headers, body });
+  });
+  const readRemote = async () => await decryptSnapshot(code, JSON.parse(remote.body), 'smolov') as SmolovSnapshot;
+
+  await page.goto('./');
+  await expect(page).toHaveTitle('Smolov SBD · Meet Prep');
+  expect(page.url()).toBe(new URL('./', baseURL!).href);
+  await expect(page.locator('vite-error-overlay')).toHaveCount(0);
+  await enterTrainingMaxes(page);
+  await page.getByLabel('Powerlevel connection code', { exact: true }).fill(code);
+  await page.getByRole('button', { name: 'Pair existing account', exact: true }).click();
+  await expect.poll(async () => (await readState(page, connection.accountId))?.settings.trainingMaxes.deadlift?.weight).toBe(285);
+  await expect(page.locator('.connection-status')).toContainText('supports independent Smolov uploads');
+  await openDay(page, 'Oct 19');
+  await page.getByRole('button', { name: 'Start workout', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Deadlift', level: 1 })).toBeVisible();
+  await page.getByLabel('Deadlift set 1 actual weight', { exact: true }).fill('235');
+  await page.getByLabel('Deadlift set 1 actual reps', { exact: true }).fill('2');
+  for (let set = 1; set <= 5; set++) {
+    await page.getByRole('button', { name: `Complete Deadlift set ${set}`, exact: true }).click();
+  }
+  await expect.poll(async () => (await readState(page, connection.accountId))?.workouts[0].sets.length).toBe(5);
+  const active = (await readState(page, connection.accountId))!.workouts[0];
+  expect(active.status).toBe('active');
+  expect(active.targets.map(target => [target.lift, target.weight, target.reps])).toEqual(Array.from({ length: 5 }, () => ['deadlift', 240, 3]));
+  expect(puts).toBe(0);
+
+  await page.getByRole('button', { name: 'Finish / stop workout', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Finish & save locally', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Training history', level: 1 })).toBeVisible();
+  await expect.poll(async () => (await readState(page, connection.accountId))?.outbox[0].status).toBe('needs-attention');
+  await expect(page.locator('.history-session')).toContainText('The relay did not return a safe snapshot ETag');
+  const paused = (await readState(page, connection.accountId))!;
+  expect(paused.outbox[0].attempts).toBe(1);
+  expect(puts).toBe(0);
+  await noHorizontalOverflow(page);
+  await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-etag-paused.png`, fullPage: true, animations: 'disabled' });
+  bodyEtagTransport = true;
+  await page.getByRole('button', { name: 'Retry pending sync', exact: true }).click();
+  await expect.poll(async () => (await readState(page, connection.accountId))?.workouts[0].sync.status).toBe('synced');
+  const saved = (await readState(page, connection.accountId))!;
+  const workout = saved.workouts[0];
+  const exact = snapshotForWorkout(workout);
+  expect(workout.status).toBe('completed');
+  expect(workout.revision).toBeGreaterThan(active.revision);
+  expect(workout.targets).toEqual(active.targets);
+  expect(workout.sets).toEqual(active.sets);
+  expect(workout.revision).toBe(paused.workouts[0].revision);
+  expect(exact.events.map(event => [event.exercise, event.weight, event.reps])).toEqual([
+    ['deadlift', 235, 2], ...Array.from({ length: 4 }, () => ['deadlift', 240, 3]),
+  ]);
+  expect(saved.outbox).toHaveLength(1);
+  expect(saved.outbox[0]).toMatchObject({ accountId: connection.accountId, workoutId: workout.id, revision: workout.revision, status: 'synced', attempts: 2 });
+  expect(puts).toBe(1);
+  expect(writeConditions).toEqual(['"mock-initial"']);
+  const firstRemote = await readRemote();
+  expect(firstRemote.sessions.find(session => session.id === workout.id)).toEqual(exact.sessions[0]);
+  expect(firstRemote.events.filter(event => event.sessionId === workout.id)).toEqual(exact.events);
+  expect(firstRemote.events.filter(event => event.sessionId === unrelated.sessions[0].id)).toEqual(unrelated.events);
+
+  // Simulate remote loss while the durable local acknowledgement remains synced.
+  const missing: SmolovSnapshot = {
+    ...firstRemote,
+    sessions: firstRemote.sessions.filter(session => session.id !== workout.id),
+    events: firstRemote.events.filter(event => event.sessionId !== workout.id),
+  };
+  remote = { ...remote, body: JSON.stringify(await encryptSnapshot(code, missing)), httpEtag: '"mock-missing-deadlift"' };
+  expect((await readState(page, connection.accountId))?.outbox[0].status).toBe('synced');
+  await page.getByRole('button', { name: 'Retry pending sync', exact: true }).click();
+  await expect.poll(() => puts).toBe(2);
+  await expect.poll(async () => (await readState(page, connection.accountId))?.outbox[0].attempts).toBe(3);
+  expect(writeConditions).toEqual(['"mock-initial"', '"mock-missing-deadlift"']);
+  const restored = await readRemote();
+  expect(restored.sessions).toHaveLength(2);
+  expect(restored.sessions.find(session => session.id === workout.id)).toEqual(exact.sessions[0]);
+  expect(restored.events.filter(event => event.sessionId === workout.id)).toEqual(exact.events);
+  expect(restored.events.filter(event => event.sessionId === unrelated.sessions[0].id)).toEqual(unrelated.events);
+
+  await page.getByRole('button', { name: 'Retry pending sync', exact: true }).click();
+  await expect.poll(async () => (await readState(page, connection.accountId))?.outbox[0].attempts).toBe(4);
+  expect(puts).toBe(2);
+  expect(await readRemote()).toEqual(restored);
+  const finalState = (await readState(page, connection.accountId))!;
+  expect(finalState.workouts[0]).toMatchObject({ id: workout.id, revision: workout.revision, status: 'completed', targets: workout.targets, sets: workout.sets, sync: { status: 'synced' } });
+  expect(finalState.outbox).toHaveLength(1);
+  expect(finalState.outbox[0].snapshot).toEqual(saved.outbox[0].snapshot);
+  await noHorizontalOverflow(page);
+  await expect(page.locator('vite-error-overlay')).toHaveCount(0);
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-etag-synced.png`, fullPage: true, animations: 'disabled' });
 });
 
 test('meet results preserve mixed units and require a successful attempt in all lifts', async ({ page }, info) => {

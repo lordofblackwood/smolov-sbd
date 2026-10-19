@@ -172,6 +172,7 @@ export function Settings({
   onCheck,
   onRetry,
   connectionStatus,
+  syncStatus,
   onTm,
 }: {
   state: AppState;
@@ -184,6 +185,7 @@ export function Settings({
   onCheck: () => Promise<void>;
   onRetry: () => void;
   connectionStatus: string;
+  syncStatus: string;
   onTm: (lift: Lift) => void;
 }) {
   const { settings } = state;
@@ -339,6 +341,7 @@ export function Settings({
         <p className="connection-status" role="status">
           {connectionStatus}
         </p>
+        {syncStatus ? <p className="connection-status" role="status">{syncStatus}</p> : null}
         {paired ? (
           <>
             <p className="small muted">
@@ -353,6 +356,10 @@ export function Settings({
                 Retry sync
               </button>
             </div>
+            <p className="small muted">
+              Retry sync checks your finished workouts and restores any missing
+              from Powerlevel.
+            </p>
             <button className="text-button" onClick={() => void onDisconnect()}>
               Disconnect · keep account data locally
             </button>

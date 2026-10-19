@@ -12,12 +12,14 @@ export function History({
   onOpen,
   onRetry,
   onProgram,
+  syncStatus,
   canEdit = true,
 }: {
   workouts: Workout[];
   onOpen: (id: string) => void;
   onRetry: () => void;
   onProgram: () => void;
+  syncStatus: string;
   canEdit?: boolean;
 }) {
   const sorted = [...workouts].sort((a, b) =>
@@ -31,6 +33,7 @@ export function History({
           <button
             className="icon-button"
             aria-label="Retry pending sync"
+            title="Check and sync saved workouts"
             disabled={!canEdit}
             onClick={onRetry}
           >
@@ -41,6 +44,7 @@ export function History({
       <p className="subtitle">
         Your actual work, saved with its original targets.
       </p>
+      {syncStatus ? <p role="status" className="muted small">{syncStatus}</p> : null}
       {!sorted.length ? (
         <section className="panel empty">
           <Icon name="history" size={36} />

@@ -101,6 +101,70 @@ describe('prepared existing-service extension, isolated from production', () => 
     expect(snapshot.events.find((event: { sessionId: string }) => event.sessionId === first.id)).toMatchObject({ revision: 2, weight: 280 })
   })
 
+  it.each([null, 'W/"proxy-etag"', '"proxy-etag"'])('uses the object version from the encrypted response when a proxy changes ETag to %s', async header => {
+    const code = newCode(), connection = await pairConnection(code), relay = mockRelay()
+    await syncWorkout(workout(connection.accountId), code, connection.accountId, { fetcher: relay.fetcher })
+    const fetcher: typeof fetch = async (input, init) => {
+      const response = await relay.fetcher(input, init)
+      if (new URL(String(input)).pathname === '/api/history/smolov' && init?.method === 'GET' && response.ok) {
+        const headers = new Headers(response.headers)
+        if (header === null) headers.delete('ETag')
+        else headers.set('ETag', header)
+        return new Response(response.body, { status: response.status, headers })
+      }
+      return response
+    }
+    const deadlift = workout(connection.accountId, 'deadlift-session')
+    deadlift.targets[0].lift = deadlift.sets[0].lift = 'deadlift'
+    expect(await syncWorkout(deadlift, code, connection.accountId, { fetcher })).toMatchObject({ status: 'synced' })
+    expect(relay.conditions[1].get('If-Match')).toBe('"etag-1"')
+    expect(relay.countWrites()).toBe(2)
+    const saved = await decryptSnapshot(code, JSON.parse([...relay.objects.values()][0].body), 'smolov')
+    expect(saved.sessions).toHaveLength(2)
+    expect(saved.events.find((event: { sessionId: string }) => event.sessionId === deadlift.id).exercise).toBe('deadlift')
+  })
+
+  it('still accepts a strong header from relays without the additive body tag', async () => {
+    const code = newCode(), connection = await pairConnection(code), relay = mockRelay()
+    await syncWorkout(workout(connection.accountId), code, connection.accountId, { fetcher: relay.fetcher })
+    const fetcher: typeof fetch = async (input, init) => {
+      const response = await relay.fetcher(input, init)
+      if (new URL(String(input)).pathname !== '/api/history/smolov' || init?.method !== 'GET' || !response.ok) return response
+      const envelope = await response.json()
+      delete envelope.snapshotEtag
+      return new Response(JSON.stringify(envelope), { status: response.status, headers: response.headers })
+    }
+    expect(await syncWorkout(workout(connection.accountId, 'next-session'), code, connection.accountId, { fetcher })).toMatchObject({ status: 'synced' })
+    expect(relay.conditions[1].get('If-Match')).toBe('"etag-1"')
+  })
+
+  it.each(['*', 'W/"weak"', 'unquoted', '"back\\slash"', '"line\nbreak"', 42, null, '"one", "two"'])('rejects an unsafe body version %j without falling back to a different header', async tag => {
+    const code = newCode(), connection = await pairConnection(code), relay = mockRelay()
+    await syncWorkout(workout(connection.accountId), code, connection.accountId, { fetcher: relay.fetcher })
+    const fetcher: typeof fetch = async (input, init) => {
+      const response = await relay.fetcher(input, init)
+      if (new URL(String(input)).pathname !== '/api/history/smolov' || init?.method !== 'GET' || !response.ok) return response
+      return new Response(JSON.stringify({ ...await response.json(), snapshotEtag: tag }), { status: response.status, headers: response.headers })
+    }
+    expect(await syncWorkout(workout(connection.accountId, 'next-session'), code, connection.accountId, { fetcher })).toMatchObject({ status: 'needs-attention', reason: 'The relay did not return a safe snapshot ETag.', retryable: false })
+    expect(relay.countPuts()).toBe(1)
+  })
+
+  it('pauses without writing when both snapshot version transports are unavailable', async () => {
+    const code = newCode(), connection = await pairConnection(code), relay = mockRelay()
+    await syncWorkout(workout(connection.accountId), code, connection.accountId, { fetcher: relay.fetcher })
+    const fetcher: typeof fetch = async (input, init) => {
+      const response = await relay.fetcher(input, init)
+      if (new URL(String(input)).pathname !== '/api/history/smolov' || init?.method !== 'GET' || !response.ok) return response
+      const envelope = await response.json(), headers = new Headers(response.headers)
+      delete envelope.snapshotEtag
+      headers.delete('ETag')
+      return new Response(JSON.stringify(envelope), { status: response.status, headers })
+    }
+    expect(await syncWorkout(workout(connection.accountId, 'next-session'), code, connection.accountId, { fetcher })).toMatchObject({ status: 'needs-attention', reason: 'The relay did not return a safe snapshot ETag.' })
+    expect(relay.countPuts()).toBe(1)
+  })
+
   it('rejects stale or conflicting revisions rather than replacing newer evidence', () => {
     const original = workout('test-account'), later = structuredClone(original)
     later.revision = 2

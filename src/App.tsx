@@ -82,6 +82,7 @@ export default function App() {
       ? "Paired locally. Upload capability has not been verified."
       : "Not connected. Workouts are saved on this device.",
   );
+  const [syncStatus, setSyncStatus] = useState("");
   const [uploadReady, setUploadReady] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
   const savingVersion = useRef(0);
@@ -171,14 +172,14 @@ export default function App() {
       const scope = accountRef.current;
       if (!conn) {
         if (manual)
-          setConnectionStatus(
+          setSyncStatus(
             "Pair your existing Powerlevel account before uploading. Saved workouts remain local.",
           );
         return;
       }
       if (!navigator.onLine) {
         if (manual)
-          setConnectionStatus(
+          setSyncStatus(
             "Offline. Logging stays local; pending uploads retry when the app reconnects.",
           );
         return;
@@ -191,15 +192,20 @@ export default function App() {
           ? current.outbox.filter(
               (e) =>
                 e.accountId === scope &&
-                latest.get(e.workoutId) === e.revision &&
-                e.status !== "synced",
+                latest.get(e.workoutId) === e.revision,
             )
           : listEligibleOutbox(current, scope);
         if (!entries.length) {
-          if (manual) setConnectionStatus("No pending workout uploads.");
+          if (manual) setSyncStatus("No finished workouts to sync.");
           return;
         }
-        setConnectionStatus("Checking the supported service contract…");
+        setSyncStatus(
+          manual
+            ? "Checking saved workouts against Powerlevel…"
+            : "Syncing saved workouts to Powerlevel…",
+        );
+        let confirmed = 0;
+        let problem: string | undefined;
         for (const entry of entries) {
           if (accountRef.current !== scope) break;
           const latestRecord = stateRef.current?.workouts.find(
@@ -221,16 +227,21 @@ export default function App() {
               result,
             ),
           );
-          setConnectionStatus(
-            result.status === "synced"
-              ? "Actual workout synced to the dedicated Smolov source."
-              : (result.reason ?? result.status),
+          if (result.status === "synced") {
+            confirmed++;
+            setUploadReady(true);
+          } else {
+            problem ??= result.reason ?? result.status;
+          }
+          setSyncStatus(
+            problem ??
+              `${confirmed} saved workout${confirmed === 1 ? "" : "s"} confirmed in Powerlevel. Refresh Powerlevel History → All training or Smolov SBD to view.`,
           );
-          if (result.status === "synced") setUploadReady(true);
           if (result.status === "needs-attention") break;
         }
       } catch (e) {
-        setConnectionStatus((e as Error).message);
+        if (accountRef.current === scope)
+          setSyncStatus((e as Error).message);
       } finally {
         syncing.current = false;
       }
@@ -316,6 +327,7 @@ export default function App() {
     localStorage.setItem(CONNECTION_KEY, JSON.stringify(nextConnection));
     setConnection(nextConnection);
     setUploadReady(false);
+    setSyncStatus("");
     setConnectionStatus(
       "Paired locally. Checking the dedicated Smolov source before uploading.",
     );
@@ -338,6 +350,7 @@ export default function App() {
     localStorage.removeItem(CONNECTION_KEY);
     setConnection(null);
     setUploadReady(false);
+    setSyncStatus("");
     setConnectionStatus(
       "Disconnected. Account data is retained in its local storage scope.",
     );
@@ -681,6 +694,7 @@ export default function App() {
                 window.scrollTo(0, 0);
               }}
               onRetry={() => void retrySync(true)}
+              syncStatus={syncStatus}
               onProgram={() => navigate("program")}
             />
           ) : (
@@ -695,6 +709,7 @@ export default function App() {
               onCheck={check}
               onRetry={() => void retrySync(true)}
               connectionStatus={connectionStatus}
+              syncStatus={syncStatus}
               onTm={(lift) => setTmReview({ lift })}
             />
           )}
