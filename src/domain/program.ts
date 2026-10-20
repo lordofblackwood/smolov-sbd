@@ -62,6 +62,15 @@ export function roundToIncrement(weight: number, increment: number): number {
   );
 }
 
+/** A 45 lb bar with plates of at least 5 lb loads in 10 lb total steps. */
+export function roundUpToLoadablePounds(weight: number): number {
+  if (!Number.isFinite(weight) || weight < 0)
+    throw new Error("Weight must be a nonnegative number.");
+  const steps = Math.max(0, (weight - 45) / 10);
+  // Keep exact loadable totals stable across floating-point conversions.
+  return 45 + Math.ceil(steps - Number.EPSILON * Math.max(1, steps) * 4) * 10;
+}
+
 /** Date-only arithmetic uses UTC solely as a calendar, never as an activity timestamp. */
 export function addDays(date: string, count: number): string {
   if (!isDateOnly(date)) throw new Error("Expected an ISO calendar date.");
@@ -436,7 +445,10 @@ export function calculateWorkingWeight(
     (tmLb * block.percent) / 100,
     incrementLb,
   );
-  return convertWeight(baselineLb + (block.offsetLb ?? 0), "lb", settings.unit);
+  const prescribedLb = baselineLb + (block.offsetLb ?? 0);
+  return settings.unit === "lb"
+    ? roundUpToLoadablePounds(prescribedLb)
+    : convertWeight(prescribedLb, "lb", settings.unit);
 }
 
 export function missingTrainingMaxes(

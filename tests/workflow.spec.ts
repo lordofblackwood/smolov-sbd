@@ -41,9 +41,9 @@ async function openDay(page: Page, date: string) {
   await page.locator('.calendar-day').filter({ hasText: date }).click();
 }
 
-async function enterTrainingMaxes(page: Page) {
+async function enterTrainingMaxes(page: Page, deadliftWeight = '285') {
   await navigate(page, 'Settings');
-  for (const [lift, weight] of [['Squat', '285'], ['Bench', '285'], ['Deadlift', '285']]) {
+  for (const [lift, weight] of [['Squat', '285'], ['Bench', '285'], ['Deadlift', deadliftWeight]]) {
     await page.getByRole('button', { name: new RegExp(`^${lift} Confirm TM`) }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel(`${lift} calibration weight`, { exact: true }).fill(weight);
@@ -152,14 +152,14 @@ test('both volume weeks put bench after light deadlift and leave heaviest squat 
   const thursdayChange = revision.locator('.schedule-changes > div').filter({ hasText: 'Thu, Oct 22' });
   await expect(thursdayChange).toContainText('Before: Squat 4 × 4');
   await expect(thursdayChange).toContainText('Now: Deadlift 3 × 6');
-  await expect(thursdayChange).toContainText('Bench 5 × 3 · 85% TM · 240 lb');
+  await expect(thursdayChange).toContainText('Bench 5 × 3 · 85% TM · 245 lb');
   await revision.getByText('Preview 10 future changed days', { exact: true }).click();
   const expected = [
     ['Deadlift'], ['Squat', 'Bench'], ['Squat', 'Bench'],
     ['Deadlift', 'Bench'], ['Squat', 'Bench'], ['Squat'],
   ];
   for (const [week, dates, heavyBench] of [
-    ['volume-1', ['Oct 19', 'Oct 20', 'Oct 21', 'Oct 22', 'Oct 23', 'Oct 24'], '240 lb'],
+    ['volume-1', ['Oct 19', 'Oct 20', 'Oct 21', 'Oct 22', 'Oct 23', 'Oct 24'], '245 lb'],
     ['volume-2', ['Oct 26', 'Oct 27', 'Oct 28', 'Oct 29', 'Oct 30', 'Oct 31'], '245 lb'],
   ] as const) {
     await page.getByRole('combobox', { name: 'Phase', exact: true }).selectOption(week);
@@ -169,7 +169,7 @@ test('both volume weeks put bench after light deadlift and leave heaviest squat 
     }
     const lightDeadliftDay = page.locator('.calendar-day').filter({ hasText: dates[3] });
     const prescriptions = lightDeadliftDay.locator('.day-prescriptions > div');
-    await expect(prescriptions.nth(0)).toContainText('3 × 6 · 200 lb');
+    await expect(prescriptions.nth(0)).toContainText('3 × 6 · 205 lb');
     await expect(prescriptions.nth(0)).toContainText('70% TM');
     await expect(prescriptions.nth(1)).toContainText(`5 × 3 · ${heavyBench}`);
     await expect(prescriptions.nth(1)).toContainText('85% TM');
@@ -199,6 +199,39 @@ test('both volume weeks put bench after light deadlift and leave heaviest squat 
   expect(errors).toEqual([]);
 });
 
+test('rounds a 270 lb prescription to 275 across preview, reload, and workout start', async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  await page.goto('./');
+  await enterTrainingMaxes(page, '315');
+  await expect(page.getByLabel('Calculation increment (lb)', { exact: true })).toHaveValue('5');
+  await expect(page.getByText(/For example, 270 becomes 275 lb\./)).toBeVisible();
+  await page.getByRole('combobox', { name: 'Training display unit', exact: true }).selectOption('kg');
+  await expect(page.getByLabel('Calculation increment (kg)', { exact: true })).toHaveValue('2.5');
+  await expect(page.getByText(/Exact halfway weights round upward\./)).toBeVisible();
+  await expect(page.getByText(/For example, 270 becomes 275 lb\./)).toHaveCount(0);
+  await page.getByRole('combobox', { name: 'Training display unit', exact: true }).selectOption('lb');
+  expect((await readState(page))?.settings.trainingMaxes.deadlift?.weight).toBe(315);
+  await navigate(page, 'Program');
+  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 19' })).toContainText('5 × 3 · 275 lb');
+  await navigate(page, 'Today');
+  await expect(page.locator('.lift-row').first()).toContainText('275 lb');
+  await page.reload();
+  await expect(page.locator('.lift-row').first()).toContainText('275 lb');
+  await page.getByRole('button', { name: 'Start workout', exact: true }).click();
+  await expect(page.getByText('Planned 275 lb × 3', { exact: true })).toHaveCount(5);
+  await expect(page.getByLabel('Deadlift set 1 actual weight', { exact: true })).toHaveValue('275');
+  await expect.poll(async () => (await readState(page))?.workouts[0]?.targets.map(target => target.weight)).toEqual([275, 275, 275, 275, 275]);
+  expect((await readState(page))?.settings.trainingMaxes.deadlift?.weight).toBe(315);
+  await page.reload();
+  await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
+  await expect(page.getByText('Planned 275 lb × 3', { exact: true })).toHaveCount(5);
+  await noHorizontalOverflow(page);
+  await page.screenshot({ path: `/private/tmp/smolov-sbd-${info.project.name}-rounded-weights.png`, fullPage: true, animations: 'disabled' });
+  expect(errors).toEqual([]);
+});
+
 test('mixed backup keeps original and revised saved days with their own targets', async ({ page }, info) => {
   const settings = structuredClone(DEFAULT_SETTINGS);
   for (const lift of ['squat', 'bench', 'deadlift'] as const) {
@@ -206,10 +239,12 @@ test('mixed backup keeps original and revised saved days with their own targets'
   }
   const originalDay = ORIGINAL_PROGRAM_DAYS.find(day => day.date === '2026-10-19')!;
   const original = startWorkout(originalDay, settings, LOCAL_ACCOUNT_ID, trainingDate);
+  original.targets = original.targets.map(target => ({ ...target, weight: target.lift === 'deadlift' ? 240 : 200 }));
   const revisedSettings = structuredClone(settings);
   revisedSettings.trainingMaxes.squat!.weight = 300;
   revisedSettings.trainingMaxes.bench = null;
   const revised = skipWorkout(PROGRAM_DAYS.find(day => day.date === '2026-10-20')!, revisedSettings, LOCAL_ACCOUNT_ID, trainingDate);
+  revised.targets = revised.targets.map(target => ({ ...target, weight: target.lift === 'squat' ? 210 : null }));
   const previousState = createInitialState(settings);
   previousState.workouts = [original, revised];
   const backup = exportBackup(previousState, LOCAL_ACCOUNT_ID, trainingDate);
@@ -291,7 +326,7 @@ test('logs actual sets, refreshes, finishes offline, reopens offline, and merges
   await expect(page.getByText('3 of 5 sets logged', { exact: true })).toBeVisible();
   await expect.poll(async () => (await readState(page))?.workouts[0]?.sets.length).toBe(4);
   const before = await readState(page);
-  expect(before?.workouts[0].targets[0]).toMatchObject({ weight: 240, reps: 3, unit: 'lb' });
+  expect(before?.workouts[0].targets[0]).toMatchObject({ weight: 245, reps: 3, unit: 'lb' });
   expect(before?.workouts[0].sets.map(set => [set.outcome, set.reps])).toEqual([['complete', 2], ['failed', 0], ['skipped', 0], ['complete', 5]]);
   const timerEnd = before?.timerEnd;
   expect(timerEnd).toBe(trainingDate.getTime() + 180_000);
@@ -445,7 +480,7 @@ test('paired deadlift resumes a missing-ETag upload and restores acknowledged hi
   await expect.poll(async () => (await readState(page, connection.accountId))?.workouts[0].sets.length).toBe(5);
   const active = (await readState(page, connection.accountId))!.workouts[0];
   expect(active.status).toBe('active');
-  expect(active.targets.map(target => [target.lift, target.weight, target.reps])).toEqual(Array.from({ length: 5 }, () => ['deadlift', 240, 3]));
+  expect(active.targets.map(target => [target.lift, target.weight, target.reps])).toEqual(Array.from({ length: 5 }, () => ['deadlift', 245, 3]));
   expect(puts).toBe(0);
 
   await page.getByRole('button', { name: 'Finish / stop workout', exact: true }).click();
@@ -470,7 +505,7 @@ test('paired deadlift resumes a missing-ETag upload and restores acknowledged hi
   expect(workout.sets).toEqual(active.sets);
   expect(workout.revision).toBe(paused.workouts[0].revision);
   expect(exact.events.map(event => [event.exercise, event.weight, event.reps])).toEqual([
-    ['deadlift', 235, 2], ...Array.from({ length: 4 }, () => ['deadlift', 240, 3]),
+    ['deadlift', 235, 2], ...Array.from({ length: 4 }, () => ['deadlift', 245, 3]),
   ]);
   expect(saved.outbox).toHaveLength(1);
   expect(saved.outbox[0]).toMatchObject({ accountId: connection.accountId, workoutId: workout.id, revision: workout.revision, status: 'synced', attempts: 2 });
@@ -571,7 +606,7 @@ test('backup preference restore previews future targets and preserves the active
   const review = page.getByRole('dialog', { name: 'Review backup preferences', exact: true });
   await expect(review).toBeVisible();
   await expect(review.locator('.preview-list')).toContainText('10-20 · Bench');
-  await expect(review.locator('.preview-list')).toContainText('200 lb → 95 kg');
+  await expect(review.locator('.preview-list')).toContainText('205 lb → 95 kg');
   await expect(review.locator('.preview-list')).toContainText('215 lb → 102.5 kg');
   await expect(review.locator('.preview-list')).not.toContainText('10-19');
   expect((await readState(page))?.settings.unit).toBe('lb');
@@ -585,15 +620,15 @@ test('backup preference restore previews future targets and preserves the active
   expect(restored?.settings.trainingMaxes.squat?.weight).toBe(300);
   expect(restored?.workouts[0]).toEqual(original);
   await navigate(page, 'Today');
-  await expect(page.locator('.lift-row').first()).toContainText('240 lb');
+  await expect(page.locator('.lift-row').first()).toContainText('245 lb');
   await expect(page.locator('.lift-row')).toHaveCount(1);
   await page.getByRole('button', { name: 'Resume workout', exact: true }).click();
-  await expect(page.getByLabel('Deadlift set 1 actual weight', { exact: true })).toHaveValue('240');
-  await expect(page.locator('.target-label').first()).toHaveText('Planned 240 lb × 3');
+  await expect(page.getByLabel('Deadlift set 1 actual weight', { exact: true })).toHaveValue('245');
+  await expect(page.locator('.target-label').first()).toHaveText('Planned 245 lb × 3');
   await expect(page.getByRole('group', { name: 'Exercises in prescribed order' }).getByRole('button', { name: /Squat/ })).toHaveCount(0);
   await expect(page.getByRole('timer')).toHaveText('1:30');
   await navigate(page, 'Program');
-  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 19' })).toContainText('240 lb');
+  await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 19' })).toContainText('245 lb');
   await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 19' })).not.toContainText('kg');
   await expect(page.locator('.calendar-day').filter({ hasText: 'Oct 21' })).toContainText('102.5 kg');
   await page.reload();

@@ -154,6 +154,33 @@ describe('durable account storage', () => {
     await saveAppState(state);
     expect((await loadAppState())!.workouts[0].targets).toEqual(originalTargets);
   });
+
+  it('keeps legacy targets, entered actuals, and queued revisions while future pound prescriptions round up', async () => {
+    const config = settings();
+    config.trainingMaxes.deadlift!.weight = 315;
+    let historical = activeWorkout();
+    historical.targets = historical.targets.map(target => ({ ...target, weight: 270 }));
+    historical = logSet(historical, {
+      id: 'legacy-actual', targetId: historical.targets[0].id, lift: 'deadlift', weight: 270, unit: 'lb', reps: 3,
+      outcome: 'complete', notes: 'Entered before loading changed', pain: false, loggedAt: NOW.toISOString(),
+    });
+    const active = startWorkout(PROGRAM_DAYS.find(day => day.date === '2026-10-20')!, config, LOCAL_ACCOUNT_ID, NOW);
+    active.targets = active.targets.map(target => ({ ...target, weight: 200 }));
+    const queued = enqueueWorkout({ ...createInitialState(config), workouts: [historical, active] }, finishWorkout(historical, NOW), { status: 'pending', now: NOW });
+    const before = structuredClone(queued);
+    const future = startWorkout(PROGRAM_DAYS.find(day => day.date === '2026-10-26')!, config, LOCAL_ACCOUNT_ID, NOW);
+    expect(future.targets.every(target => target.weight === 275)).toBe(true);
+    expect(queued).toEqual(before);
+    await saveAppState(queued);
+    const reopened = (await loadAppState())!;
+    const restored = importBackup(exportBackup(reopened), createInitialState(DEFAULT_SETTINGS), LOCAL_ACCOUNT_ID, { restorePreferences: true }).state;
+    expect(restored.workouts).toEqual(before.workouts);
+    expect(restored.outbox).toEqual(before.outbox);
+    expect(restored.workouts[0].targets[0].weight).toBe(270);
+    expect(restored.workouts[0].sets[0].weight).toBe(270);
+    expect(restored.workouts[1].targets[0].weight).toBe(200);
+    expect(restored.settings.trainingMaxes.deadlift?.weight).toBe(315);
+  });
 });
 
 describe('rest timer', () => {
@@ -325,6 +352,7 @@ describe('durable outbox', () => {
   it('keeps original workout targets, actuals, and queued revisions intact when applying the revised calendar', async () => {
     const originalDay = ORIGINAL_PROGRAM_DAYS.find(day => day.date === '2026-10-19')!;
     let original = startWorkout(originalDay, settings(), LOCAL_ACCOUNT_ID, NOW);
+    original.targets = original.targets.map(target => ({ ...target, weight: target.lift === 'deadlift' ? 240 : 200 }));
     const target = original.targets[5];
     original = logSet(original, {
       id: 'legacy-squat-set', targetId: target.id, lift: 'squat', weight: 195, unit: 'lb', reps: 5,

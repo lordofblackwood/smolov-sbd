@@ -52,7 +52,9 @@ The user's revised pairings apply to both volume weeks:
 | Saturday  | Squat 5×3 at 85% TM    | —                   |
 | Sunday    | Rest                   | —                   |
 
-Thursday takes the bench prescription from the heaviest squat day. Weekly reps remain 69 squat, 69 bench and 33 deadlift. Week 2 still adds 5 lb after rounding for squat/bench only; peak, taper and meet prescriptions are unchanged.
+Thursday takes the bench prescription from the heaviest squat day. Weekly reps remain 69 squat, 69 bench and 33 deadlift. Week 2 still adds 5 lb after rounding for squat/bench only; peak/taper percentages, sets and reps and the meet prescriptions are unchanged.
+
+Calculated pound targets then round **up** to totals loadable with a 45 lb bar and 5 lb plates, without 2.5 lb plates: 265, 275, 285 lb, and so on. For example, 270 becomes 275 lb and 275 stays 275 lb. This final plate rounding follows the existing calculation increment and Week 2 offset, so adjacent prescriptions can share a loadable total. Kilogram calculations, confirmed training maxes, manually entered actual weights, saved workout targets and queued uploads stay unchanged.
 
 The Program screen previews the future changed dates and calculated targets. Unstarted days in a volume week containing an original-layout target snapshot retain the original pairings, preventing duplicated moved work or silent changes to an active session. Saved days display their own original or revised targets, including after a backup import combines layouts. Untouched weeks use the revised pairings. Saved weights, actual sets, timestamps and outbox revisions remain intact.
 
@@ -80,9 +82,9 @@ See [integration documentation](docs/powerlevel-integration.md) for the live dep
 
 ## Verification
 
-Final checks: 100 automated tests, type checking and production build pass; 19 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
+Final checks: 115 automated tests, type checking and the Pages-path production build pass; 23 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
 
-The automated suite covers the exact schedule/order/reps; half-up loading and Week 2 offsets; RPE restrictions; null default TMs; snapshot integrity; timezone/DST; actual logging/edit/undo/failure/skip; warm-ups; IndexedDB failure/reopen/account separation; conservative backups; rest timers; conditional sync/revisions/concurrent writers/authentication/ambiguous reconciliation; and mixed-unit meet totals.
+The automated suite covers the exact schedule/order/reps; calculation increments, Week 2 offsets and final pound rounding without 2.5 lb plates; RPE restrictions; null default TMs; snapshot integrity; timezone/DST; actual logging/edit/undo/failure/skip; warm-ups; IndexedDB failure/reopen/account separation; conservative backups; rest timers; conditional sync/revisions/concurrent writers/authentication/ambiguous reconciliation; and mixed-unit meet totals.
 
 Browser checks exercise the production UI on desktop and phones: calibration/TMs → workout → actual set edits, failed/skipped sets and undo → refresh/resume → timer recovery → offline finish → offline new-tab reopen → reconnect and honest sync state → backup duplicates/preferences → meet attempts. Test accounts/requests are isolated, and no successful live account upload is asserted.
 

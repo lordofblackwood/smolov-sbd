@@ -3,7 +3,7 @@ import {
   addDays, addWarmup, calculateWorkingWeight, confirmCalibrationTrainingMax, convertWeight,
   createTargets, DEFAULT_SETTINGS, emptyMeetAttempts, finishWorkout, formatRule, getProgramDay,
   isDateOnly, logSet, meetTotal, missingTrainingMaxes, prescribedReps, previewScheduleChanges, previewTrainingMaxChange,
-  ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, programDaysForWorkouts, roundToIncrement, skipWorkout, startWorkout, todayDate, undoSet, validateSet, workoutSummary,
+  ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, programDaysForWorkouts, roundToIncrement, roundUpToLoadablePounds, skipWorkout, startWorkout, todayDate, undoSet, validateSet, workoutSummary,
 } from '../src/domain/program';
 import type { Lift, LoggedSet, Settings, Workout } from '../src/domain/types';
 import { createInitialState, enqueueWorkout } from '../src/storage';
@@ -266,8 +266,8 @@ describe('training weights and date-only integrity', () => {
     expect(createTargets(programDay('2026-10-19'), DEFAULT_SETTINGS).every(target => target.weight === null)).toBe(true);
   });
 
-  it('rounds the provided 285 lb example correctly and rounds exact halfway values upward', () => {
-    for (const [percent, expected] of [[70, 200], [75, 215], [80, 230], [85, 240]]) {
+  it('rounds the provided 285 lb prescriptions up to totals loadable without 2.5 lb plates', () => {
+    for (const [percent, expected] of [[70, 205], [75, 215], [80, 235], [85, 245]]) {
       expect(calculateWorkingWeight({ lift: 'bench', percent }, settings())).toBe(expected);
     }
     expect(roundToIncrement(202.5, 5)).toBe(205);
@@ -276,8 +276,22 @@ describe('training weights and date-only integrity', () => {
     expect(() => roundToIncrement(200, 0)).toThrow();
   });
 
-  it('adds Week 2 offsets after rounding Week 1, only to squat and bench', () => {
-    for (const [percent, expected] of [[70, 205], [75, 220], [80, 235], [85, 245]]) {
+  it('rounds pound totals upward with a 45 lb bar and preserves already loadable weights', () => {
+    for (const [weight, expected] of [[0, 45], [44.99, 45], [45, 45], [45.01, 55], [265, 265], [270, 275], [275, 275], [275.01, 285]]) {
+      expect(roundUpToLoadablePounds(weight)).toBe(expected);
+    }
+    expect(roundUpToLoadablePounds(275 + Number.EPSILON * 275)).toBe(275);
+    for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(() => roundUpToLoadablePounds(invalid)).toThrow();
+    }
+    const config = settings();
+    config.trainingMaxes.deadlift = tm(315);
+    expect(calculateWorkingWeight({ lift: 'deadlift', percent: 85 }, config)).toBe(275);
+    expect(config.trainingMaxes.deadlift.weight).toBe(315);
+  });
+
+  it('applies Week 2 offsets before rounding to loadable pound totals, only to squat and bench', () => {
+    for (const [percent, expected] of [[70, 205], [75, 225], [80, 235], [85, 245]]) {
       expect(calculateWorkingWeight({ lift: 'bench', percent, offsetLb: 5 }, settings())).toBe(expected);
     }
     for (const day of PROGRAM_DAYS) for (const block of day.blocks) {
@@ -307,7 +321,9 @@ describe('training weights and date-only integrity', () => {
 
   it('previews only unstarted future prescriptions and never rewrites historical or active snapshots', () => {
     const config = settings();
-    const history = finishWorkout(startWorkout(programDay('2026-10-20'), config, 'local', at), at);
+    const historical = startWorkout(programDay('2026-10-20'), config, 'local', at);
+    historical.targets = historical.targets.map(target => ({ ...target, weight: 200 }));
+    const history = finishWorkout(historical, at);
     const active = startWorkout(programDay('2026-10-21'), config, 'local', at);
     const snapshots = structuredClone([history, active]);
     const changes = previewTrainingMaxChange('bench', tm(300), config, [history, active], '2026-10-14');

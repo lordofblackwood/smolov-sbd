@@ -286,7 +286,7 @@ export function Settings({
             </select>
           </label>
           <label>
-            Loading increment ({settings.unit})
+            Calculation increment ({settings.unit})
             <input
               type="number"
               min="0.01"
@@ -325,8 +325,19 @@ export function Settings({
           Start rest timer after completing a set
         </label>
         <p className="muted small">
-          Exact halfway weights round upward. Week 2 adds 5 lb after Week 1
-          rounding for squat and bench.
+          {settings.unit === "lb" ? (
+            <>
+              Pound targets round up to totals loadable with a 45 lb bar and
+              5 lb plates: 265, 275, 285 lb. For example, 270 becomes 275 lb.
+              Week 2’s +5 lb for squat and bench is applied before this final
+              plate rounding. Saved workout targets stay unchanged.
+            </>
+          ) : (
+            <>
+              Exact halfway weights round upward. Week 2 adds 5 lb after Week 1
+              rounding for squat and bench.
+            </>
+          )}
         </p>
       </section>
       <section className="panel settings-section">
