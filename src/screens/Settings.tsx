@@ -5,16 +5,15 @@ import type {
   Unit,
   Lift,
   Workout,
+  WeekReview,
 } from "../domain/types";
 import {
   LIFTS,
   LIFT_LABELS,
-  programDaysForWorkouts,
   calculateWorkingWeight,
-  previewTrainingMaxChange,
   convertWeight,
-  todayDate,
 } from "../domain/program";
+import { trainingSessions, workoutForSession } from "../domain/sequence";
 import type { AppState } from "../storage/types";
 import { exportBackup, backupFilename, importBackup } from "../storage/backup";
 import { Modal } from "../components/Modal";
@@ -25,6 +24,7 @@ export function TmReview({
   initial,
   settings,
   workouts,
+  weekReviews = [],
   onClose,
   onSave,
 }: {
@@ -32,6 +32,7 @@ export function TmReview({
   initial?: TrainingMax;
   settings: SettingsType;
   workouts: Workout[];
+  weekReviews?: WeekReview[];
   onClose: () => void;
   onSave: (next: TrainingMax) => void;
 }) {
@@ -58,9 +59,14 @@ export function TmReview({
     rpe !== "" &&
     Number(rpe) >= 6 &&
     Number(rpe) <= 8;
-  const changes = valid
-    ? previewTrainingMaxChange(lift, next, settings, workouts, todayDate())
-    : [];
+  const revised = { ...settings, trainingMaxes: { ...settings.trainingMaxes, [lift]: next } };
+  const changes = valid ? trainingSessions(workouts, settings, weekReviews)
+    .filter(session => !workoutForSession(session, workouts))
+    .flatMap(session => session.blocks.filter(block => block.lift === lift && block.percent !== undefined).flatMap(block => {
+      const before = calculateWorkingWeight(block, settings);
+      const after = calculateWorkingWeight(block, revised);
+      return before === after ? [] : [{ blockId: block.id, label: session.label, before, after, unit: settings.unit, pending: session.adjustmentPending }];
+    })) : [];
   return (
     <Modal title={`${LIFT_LABELS[lift]} training max`} onClose={onClose}>
       <p>
@@ -124,7 +130,7 @@ export function TmReview({
               {changes.map((c) => (
                 <div key={c.blockId}>
                   <span>
-                    {c.date.slice(5)} · {c.rule}
+                    {c.label}{c.pending ? " · before weekly check-in" : ""}
                   </span>
                   <strong>
                     {weightText(c.before)} → {weightText(c.after)} {c.unit}
@@ -208,7 +214,7 @@ export function Settings({
       const result = importBackup(await f.text(), state, accountId, {
         restorePreferences: restore,
       });
-      const message = `Imported ${result.report.addedWorkouts} workouts; ${result.report.duplicateWorkouts} duplicates skipped; ${result.report.conflictingWorkoutIds.length} conflicts kept unchanged.${result.report.settingsImported ? " Preferences restored." : ""}`;
+      const message = `Imported ${result.report.addedWorkouts} workouts; ${result.report.duplicateWorkouts} duplicates skipped; ${result.report.conflictingWorkoutIds.length} conflicts kept unchanged.${result.report.settingsImported ? " Preferences restored." : ""}${result.report.addedWeekReviews ? ` ${result.report.addedWeekReviews} weekly check-ins restored.` : ""}${result.report.conflictingWeekReviewIds.length ? ` ${result.report.conflictingWeekReviewIds.length} conflicting weekly check-ins kept unchanged.` : ""}`;
       if (restore) {
         setPendingImport({ state: result.state, message });
       } else {
@@ -329,13 +335,13 @@ export function Settings({
             <>
               Pound targets round up to totals loadable with a 45 lb bar and
               5 lb plates: 265, 275, 285 lb. For example, 270 becomes 275 lb.
-              Week 2’s +5 lb for squat and bench is applied before this final
+              Your per-lift weekly adjustments apply before this final
               plate rounding. Saved workout targets stay unchanged.
             </>
           ) : (
             <>
-              Exact halfway weights round upward. Week 2 adds 5 lb after Week 1
-              rounding for squat and bench.
+              Exact halfway weights round upward. Each lift’s weekly adjustment
+              is converted from pounds and added after percentage rounding.
             </>
           )}
         </p>
@@ -430,7 +436,7 @@ export function Settings({
       <section className="panel settings-section">
         <h2>Local data</h2>
         <p className="muted small">
-          JSON backups include targets, actual sets, meet attempts and pending
+          JSON backups include targets, actual sets, weekly check-ins, archived meet attempts and pending
           uploads. They exclude connection codes.
         </p>
         <button className="secondary full" onClick={download}>
@@ -478,12 +484,8 @@ export function Settings({
             as recorded.
           </p>
           <div className="preview-list">
-            {programDaysForWorkouts(state.workouts)
-              .filter(
-                (d) =>
-                  d.date >= todayDate() &&
-                  !state.workouts.some((w) => w.date === d.date),
-              )
+            {trainingSessions(state.workouts, settings, state.weekReviews)
+              .filter(d => !workoutForSession(d, state.workouts))
               .flatMap((d) =>
                 d.blocks
                   .filter((b) => b.percent !== undefined)
@@ -498,7 +500,7 @@ export function Settings({
                         pendingImport.state.settings.unit ? null : (
                       <div key={b.id}>
                         <span>
-                          {d.date.slice(5)} · {LIFT_LABELS[b.lift]}
+                          {d.label} · {LIFT_LABELS[b.lift]}{d.adjustmentPending ? " · before weekly check-in" : ""}
                         </span>
                         <strong>
                           {weightText(before)} {settings.unit} →{" "}
@@ -526,8 +528,7 @@ export function Settings({
         </Modal>
       ) : null}
       <p className="small muted">
-        Smolov SBD v1 · Meet date fixed to November 15, 2026 · Local-first
-        storage
+        Smolov SBD · Two 3-week cycles · 7-day recovery week · Local-first storage
       </p>
     </>
   );

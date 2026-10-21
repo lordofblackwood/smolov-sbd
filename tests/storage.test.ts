@@ -1,7 +1,7 @@
 import { IDBFactory, IDBObjectStore as FakeObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, ORIGINAL_PROGRAM_DAYS, PROGRAM_DAYS, finishWorkout, logSet, programDaysForWorkouts, startWorkout } from '../src/domain/program';
-import type { Settings, Workout } from '../src/domain/types';
+import type { Settings, WeekReview, Workout } from '../src/domain/types';
 import {
   DATABASE_NAME, LOCAL_ACCOUNT_ID, MAX_BACKUP_BYTES, createInitialState, enqueueWorkout,
   exportBackup, importBackup, listEligibleOutbox, loadAppState, saveAppState,
@@ -32,6 +32,10 @@ function loggedWorkout(accountId = LOCAL_ACCOUNT_ID): Workout {
 
 function stateWithWorkout(accountId = LOCAL_ACCOUNT_ID): AppState {
   return { ...createInitialState(settings()), workouts: [loggedWorkout(accountId)] };
+}
+
+function weekReview(weekId = 'cycle-1:week-1'): WeekReview {
+  return { weekId, feelings: { squat: 'easy', bench: 'decent', deadlift: 'hard' }, offsetsLb: { squat: 10, bench: 2.5, deadlift: -5 }, reviewedAt: NOW.toISOString() };
 }
 
 async function rawWrite(value: unknown, accountId = LOCAL_ACCOUNT_ID, version = 1): Promise<void> {
@@ -155,6 +159,42 @@ describe('durable account storage', () => {
     expect((await loadAppState())!.workouts[0].targets).toEqual(originalTargets);
   });
 
+  it('stores different program sessions on the same actual date without rewriting legacy history', async () => {
+    const state = stateWithWorkout();
+    const legacy = structuredClone(state.workouts[0]);
+    const first = { ...activeWorkout(), id: 'sequence-one', programSessionId: 'cycle-1:week-1:session-2' };
+    const second = { ...activeWorkout(), id: 'sequence-two', programSessionId: 'cycle-1:week-1:session-3' };
+    state.workouts.push(first, second);
+    await saveAppState(state);
+    const reopened = (await loadAppState())!;
+    expect(reopened.workouts).toEqual([legacy, first, second]);
+    expect(reopened.workouts.every(workout => workout.date === '2026-10-19')).toBe(true);
+    expect(reopened.workouts[0]).not.toHaveProperty('programSessionId');
+  });
+
+  it('rejects duplicate program positions even when their actual workout dates differ', () => {
+    const state = stateWithWorkout();
+    state.workouts[0].programSessionId = 'cycle-1:week-1:session-1';
+    state.workouts.push({ ...activeWorkout(), id: 'another-session', date: '2026-10-22', programSessionId: 'cycle-1:week-1:session-1' });
+    expect(() => validateAppState(state, LOCAL_ACCOUNT_ID)).toThrow('duplicate identity cycle-1:week-1:session-1');
+  });
+
+  it('keeps preexisting untagged records valid when they share a scheduled date', () => {
+    const state = stateWithWorkout();
+    state.workouts.push({ ...activeWorkout(), id: 'another-legacy-record' });
+    expect(() => validateAppState(state, LOCAL_ACCOUNT_ID)).not.toThrow();
+  });
+
+  it('persists independent lift ratings and cumulative offsets without changing saved workouts', async () => {
+    const state = stateWithWorkout();
+    state.weekReviews = [weekReview()];
+    const before = structuredClone(state.workouts);
+    await saveAppState(state);
+    const reopened = (await loadAppState())!;
+    expect(reopened.weekReviews).toEqual(state.weekReviews);
+    expect(reopened.workouts).toEqual(before);
+  });
+
   it('keeps legacy targets, entered actuals, and queued revisions while future pound prescriptions round up', async () => {
     const config = settings();
     config.trainingMaxes.deadlift!.weight = 315;
@@ -228,6 +268,89 @@ describe('JSON backup protection', () => {
     expect(local.workouts[0].notes).toBe('');
   });
 
+  it('reports an imported duplicate program position without replacing its local workout or outbox', () => {
+    const local = stateWithWorkout();
+    local.workouts[0].programSessionId = 'cycle-1:week-1:session-1';
+    const incoming = stateWithWorkout();
+    incoming.workouts[0] = { ...incoming.workouts[0], id: 'backup-session', date: '2026-10-22', programSessionId: 'cycle-1:week-1:session-1' };
+    const queued = enqueueWorkout(incoming, finishWorkout(incoming.workouts[0], NOW));
+    const result = importBackup(exportBackup(queued), local);
+    expect(result.report).toMatchObject({ addedWorkouts: 0, conflictingWorkoutIds: ['backup-session'], addedOutboxEntries: 0 });
+    expect(result.state.workouts).toEqual(local.workouts);
+    expect(result.state.outbox).toEqual(local.outbox);
+  });
+
+  it.each(['local', 'backup'])('detects a declared program position overlapping a %s legacy record', (legacySide) => {
+    const local = stateWithWorkout();
+    const incoming = stateWithWorkout();
+    incoming.workouts[0].id = 'backup-session';
+    const tagged = legacySide === 'local' ? incoming.workouts[0] : local.workouts[0];
+    tagged.programSessionId = 'cycle-1:week-1:session-1';
+    tagged.date = '2026-10-22';
+    const result = importBackup(exportBackup(incoming), local);
+    expect(result.report.conflictingWorkoutIds).toEqual(['backup-session']);
+    expect(result.state.workouts).toEqual(local.workouts);
+  });
+
+  it('preserves separate untagged legacy records when importing old backups', () => {
+    const local = stateWithWorkout();
+    const incoming = stateWithWorkout();
+    incoming.workouts[0].id = 'backup-legacy-session';
+    const result = importBackup(exportBackup(incoming), local);
+    expect(result.report).toMatchObject({ addedWorkouts: 1, conflictingWorkoutIds: [] });
+    expect(result.state.workouts).toHaveLength(2);
+  });
+
+  it('merges missing week reviews by week, reports conflicts, and preserves the local review', () => {
+    const local = createInitialState(DEFAULT_SETTINGS);
+    local.weekReviews = [weekReview()];
+    const incoming = createInitialState(DEFAULT_SETTINGS);
+    incoming.weekReviews = [weekReview(), weekReview('cycle-1:week-2')];
+    incoming.weekReviews[0].feelings.squat = 'hard';
+    incoming.weekReviews[0].offsetsLb.squat = -10;
+    const result = importBackup(exportBackup(incoming), local);
+    expect(result.report).toMatchObject({ addedWeekReviews: 1, conflictingWeekReviewIds: ['cycle-1:week-1'] });
+    expect(result.state.weekReviews).toEqual([local.weekReviews[0], incoming.weekReviews[1]]);
+    expect(local.weekReviews).toEqual([weekReview()]);
+    const repeated = importBackup(exportBackup(result.state), result.state);
+    expect(repeated.report).toMatchObject({ addedWeekReviews: 0, conflictingWeekReviewIds: [] });
+    expect(repeated.state.weekReviews).toEqual(result.state.weekReviews);
+  });
+
+  it('preserves reviews when restoring preferences from an old backup without reviews', () => {
+    const local = createInitialState(DEFAULT_SETTINGS);
+    local.weekReviews = [weekReview()];
+    const oldBackup = exportBackup(createInitialState(DEFAULT_SETTINGS));
+    const result = importBackup(oldBackup, local, LOCAL_ACCOUNT_ID, { restorePreferences: true });
+    expect(result.state.weekReviews).toEqual(local.weekReviews);
+    expect(result.report).toMatchObject({ addedWeekReviews: 0, conflictingWeekReviewIds: [] });
+    const oldRoundTrip = importBackup(oldBackup, createInitialState(DEFAULT_SETTINGS));
+    expect(oldRoundTrip.state).not.toHaveProperty('weekReviews');
+  });
+
+  it.each([
+    ['unknown week', (review: any) => { review.weekId = 'cycle-3:week-1'; }],
+    ['unknown feeling', (review: any) => { review.feelings.bench = 'maybe'; }],
+    ['missing lift feeling', (review: any) => { delete review.feelings.deadlift; }],
+    ['nonfinite offset', (review: any) => { review.offsetsLb.squat = null; }],
+    ['extreme offset', (review: any) => { review.offsetsLb.bench = 100_001; }],
+    ['timezone-free review', (review: any) => { review.reviewedAt = '2026-10-19T12:00:00'; }],
+  ])('rejects invalid week review data: %s', (_name, mutate) => {
+    const state = createInitialState(DEFAULT_SETTINGS);
+    state.weekReviews = [weekReview()];
+    const envelope = JSON.parse(exportBackup(state));
+    mutate(envelope.state.weekReviews[0]);
+    expect(() => importBackup(JSON.stringify(envelope), createInitialState(DEFAULT_SETTINGS))).toThrow();
+  });
+
+  it('rejects duplicate week review identities without changing current data', () => {
+    const state = createInitialState(DEFAULT_SETTINGS);
+    state.weekReviews = [weekReview()];
+    const envelope = JSON.parse(exportBackup(state));
+    envelope.state.weekReviews.push(structuredClone(envelope.state.weekReviews[0]));
+    expect(() => importBackup(JSON.stringify(envelope), createInitialState(DEFAULT_SETTINGS))).toThrow('duplicate identity');
+  });
+
   it('rejects foreign account backups and cannot reassign imported outbox identities', () => {
     const foreign = stateWithWorkout('account-A');
     expect(() => importBackup(exportBackup(foreign, 'account-A'), createInitialState(DEFAULT_SETTINGS))).toThrow('different account');
@@ -259,6 +382,9 @@ describe('JSON backup protection', () => {
     ['skipped planned reps', (state: any) => { state.workouts[0].sets[0].outcome = 'skipped'; }],
     ['timezone-free activity', (state: any) => { state.workouts[0].sets[0].loggedAt = '2026-10-19T12:01:00'; }],
     ['impossible scheduled date', (state: any) => { state.workouts[0].date = '2026-02-30'; }],
+    ['empty program position', (state: any) => { state.workouts[0].programSessionId = ' '; }],
+    ['non-string program position', (state: any) => { state.workouts[0].programSessionId = 1; }],
+    ['control characters in program position', (state: any) => { state.workouts[0].programSessionId = 'cycle-1:week-1:session-1\n'; }],
     ['unexpected nested field', (state: any) => { state.workouts[0].targets[0].extra = true; }],
     ['false completed session', (state: any) => { state.workouts[0].status = 'completed'; state.workouts[0].finishedAt = NOW.toISOString(); }],
   ])('rejects invalid nested field: %s', (_name, mutate) => {
@@ -279,6 +405,22 @@ describe('JSON backup protection', () => {
 });
 
 describe('durable outbox', () => {
+  it('round-trips program identity, actual date, and immutable targets through the existing backup format', async () => {
+    const state = stateWithWorkout();
+    state.workouts[0].programSessionId = 'cycle-1:week-1:session-1';
+    state.workouts[0].date = '2026-10-22';
+    const queued = enqueueWorkout(state, finishWorkout(state.workouts[0], NOW), { now: NOW });
+    const before = structuredClone(queued);
+    await saveAppState(queued);
+    const reopened = (await loadAppState())!;
+    const backup = exportBackup(reopened);
+    const restored = importBackup(backup, createInitialState(DEFAULT_SETTINGS)).state;
+    expect(JSON.parse(backup)).toMatchObject({ backupVersion: 1, state: { schemaVersion: 1 } });
+    expect(restored.workouts).toEqual(before.workouts);
+    expect(restored.outbox).toEqual(before.outbox);
+    expect(restored.outbox[0].snapshot).toMatchObject({ programSessionId: 'cycle-1:week-1:session-1', date: '2026-10-22' });
+  });
+
   it('defaults to honest needs-attention without uploads and preserves stable identity on reload', async () => {
     const fetcher = vi.fn();
     vi.stubGlobal('fetch', fetcher);

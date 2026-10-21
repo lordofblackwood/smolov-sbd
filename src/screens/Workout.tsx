@@ -320,7 +320,7 @@ export function Workout({
     <>
       <button className="text-button back" onClick={onBack}>
         <Icon name="back" />{" "}
-        {workout.status === "active" ? "Back to today" : "Back to history"}
+        {workout.status === "active" ? "Back to next workout" : "Back to history"}
       </button>
       <div className="section-heading">
         <div>

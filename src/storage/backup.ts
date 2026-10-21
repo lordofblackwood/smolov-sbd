@@ -1,4 +1,5 @@
 import type { Workout } from "../domain/types";
+import { programSessionIdForWorkout } from "../domain/sequence";
 import type { AppState } from "./types";
 import { LOCAL_ACCOUNT_ID } from "./types";
 import {
@@ -19,6 +20,8 @@ export interface ImportReport {
   conflictingMeetSlots: string[];
   addedOutboxEntries: number;
   conflictingOutboxIds: string[];
+  addedWeekReviews: number;
+  conflictingWeekReviewIds: string[];
   settingsImported: boolean;
 }
 
@@ -124,6 +127,8 @@ export function importBackup(
     conflictingMeetSlots: [],
     addedOutboxEntries: 0,
     conflictingOutboxIds: [],
+    addedWeekReviews: 0,
+    conflictingWeekReviewIds: [],
     settingsImported: false,
   };
   const existing = new Map(
@@ -131,7 +136,18 @@ export function importBackup(
   );
   const importedIds = new Set<string>();
   for (const workout of incoming.workouts) {
-    const local = existing.get(workout.id);
+    const sessionId = programSessionIdForWorkout(workout, incoming.workouts);
+    const local = existing.get(workout.id) ??
+      (sessionId
+        ? merged.workouts.find(
+            (candidate) =>
+              // Old backups may contain separate records on the same legacy date.
+              // Apply sequence identity only when one record declares it.
+              (workout.programSessionId !== undefined ||
+                candidate.programSessionId !== undefined) &&
+              programSessionIdForWorkout(candidate, merged.workouts) === sessionId,
+          )
+        : undefined);
     if (local) {
       if (sameRecord(local, workout)) report.duplicateWorkouts++;
       else report.conflictingWorkoutIds.push(workout.id);
@@ -171,6 +187,18 @@ export function importBackup(
     if (!importedIds.has(entry.workoutId)) continue;
     merged.outbox.push(entry);
     report.addedOutboxEntries++;
+  }
+  for (const review of incoming.weekReviews ?? []) {
+    const local = merged.weekReviews?.find(
+      (item) => item.weekId === review.weekId,
+    );
+    if (local) {
+      if (!sameRecord(local, review))
+        report.conflictingWeekReviewIds.push(review.weekId);
+      continue;
+    }
+    (merged.weekReviews ??= []).push(review);
+    report.addedWeekReviews++;
   }
   if (options.restorePreferences) {
     merged.settings = incoming.settings;

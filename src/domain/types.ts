@@ -1,5 +1,15 @@
 export type Lift = "squat" | "bench" | "deadlift";
 export type Unit = "lb" | "kg";
+export type WeekFeeling = "easy" | "good" | "decent" | "ok" | "hard";
+
+export interface WeekReview {
+  weekId: string;
+  feelings: Record<Lift, WeekFeeling>;
+  /** Cumulative weekly loading offsets from the base percentages, in pounds. */
+  offsetsLb: Record<Lift, number>;
+  reviewedAt: string;
+}
+
 export type Phase =
   "calibration" | "volume-1" | "volume-2" | "peak" | "taper" | "meet";
 
@@ -77,6 +87,9 @@ export interface SyncState {
 export interface Workout {
   id: string;
   revision: number;
+  /** Stable position in the undated program; older scheduled records omit it. */
+  programSessionId?: string;
+  /** Actual workout date for program sessions; original date for saved history. */
   date: string;
   startedAt: string;
   updatedAt: string;

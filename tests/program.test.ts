@@ -309,6 +309,30 @@ describe('training weights and date-only integrity', () => {
     expect(convertWeight(convertWeight(285, 'lb', 'kg'), 'kg', 'lb')).toBeCloseTo(285, 10);
   });
 
+  it('clamps negative weekly prescriptions before applying the existing pound bar minimum', () => {
+    const config = settings();
+    config.trainingMaxes.deadlift = tm(5);
+    const before = structuredClone(config);
+    const block = { lift: 'deadlift' as const, percent: 70, offsetLb: -25 };
+    expect(calculateWorkingWeight(block, config)).toBe(45);
+    expect(calculateWorkingWeight(block, { ...config, unit: 'kg', increment: 2.5 })).toBe(0);
+    expect(config).toEqual(before);
+    expect(calculateWorkingWeight({ lift: 'bench', percent: 70, offsetLb: 15 }, settings())).toBe(215);
+    expect(calculateWorkingWeight({ lift: 'bench', percent: 70, offsetLb: -5 }, settings())).toBe(195);
+  });
+
+  it('rejects zero-weight percentage targets on start while allowing a recorded skip', () => {
+    const config = { ...settings(), unit: 'kg' as const, increment: 2.5 };
+    config.trainingMaxes.deadlift = tm(5);
+    const original = programDay('2026-10-19');
+    const day = { ...original, blocks: original.blocks.map(block => ({ ...block, offsetLb: -25 })) };
+    expect(() => startWorkout(day, config, 'local', at)).toThrow(/smaller weekly adjustment or review its training max/);
+    const skipped = skipWorkout(day, config, 'local', at);
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.targets.every(target => target.weight === 0 && target.unit === 'kg')).toBe(true);
+    expect(startWorkout(day, { ...config, unit: 'lb', increment: 5 }, 'local', at).targets[0].weight).toBe(45);
+  });
+
   it('guards only percentage-based sessions when a TM is absent', () => {
     expect(missingTrainingMaxes(programDay('2026-10-19'), DEFAULT_SETTINGS)).toEqual(['deadlift']);
     expect(missingTrainingMaxes(programDay('2026-10-20'), DEFAULT_SETTINGS)).toEqual(['squat', 'bench']);

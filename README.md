@@ -1,6 +1,6 @@
-# Smolov SBD · Meet Prep
+# Smolov SBD · Training Cycles
 
-A mobile-first, local-first PWA for **Modified Smolov Jr. — SBD Meet Prep**, October 14–November 15, 2026. The supplied schedule, including the approved Friday calibration and volume-week pairing revisions below, is implemented in `src/domain/program.ts`; the meet date and America/New_York calendar do not shift when a workout is missed.
+A mobile-first, local-first PWA for **Modified Smolov Jr. — SBD Training Cycles**. Complete three training weeks, take seven full days off, then complete another three training weeks. The home screen always presents the next unfinished workout; no session has a calendar deadline or meet countdown. `src/domain/sequence.ts` builds the current sequence on top of the preserved legacy prescriptions in `src/domain/program.ts`.
 
 ## Run, test and build
 
@@ -32,41 +32,50 @@ The `dist` output can also be served by a static HTTPS host; localhost is permit
 
 Keep a dedicated subpath/origin: the manifest, app assets and service-worker scope use the configured base. This service worker precaches only the app shell/assets, not authenticated API responses or connection credentials. An update waits for user action and is disabled while a workout is active or a local save is pending.
 
-## Friday calibration
+## Calibration and saved progress
 
-All three calibration tests are on **Friday, October 16**, ordered squat, bench, then deadlift: one single each at RPE 6–8. October 14–15 and October 17–18 are recovery days. Volume week 1 still starts Monday, October 19, and the meet remains November 15.
+Calibration is optional when all three training maxes are already confirmed. Otherwise, perform one squat, bench, and deadlift single at RPE 6–8, in that order, or confirm a previously performed single in Settings. The actual successfully lifted weight becomes the TM only after explicit confirmation; no estimated 1RM is calculated.
 
-The actual successfully lifted single remains the training max, confirmed explicitly without estimating a 1RM. Existing calibration snapshots, dates, confirmed maxes and outbox records are preserved. If calibration already began under the original schedule, unstarted calibration days retain the original schedule to avoid repeating tests; the Program screen explains this. Untouched calibration uses the Friday session.
+Existing calibration snapshots, original dates, confirmed maxes, active workouts, completed workouts and outbox records stay unchanged. A started original split calibration keeps its remaining unstarted tests without repeating saved tests. Legacy volume-week records map read-only to Cycle 1 weeks 1–2. Weeks already started under the original pairings retain them; untouched weeks use the revised pairings below. Old peak/taper/meet results remain stored and backed up; they are outside the new training sequence. Any active saved workout can still be resumed and finished.
 
-## Volume-week pairings
+New sessions have a stable program position (`programSessionId`) and record the actual New York start date separately. More than one session can occur on the same date without overwriting another. Finishing a complete or partial session, or explicitly skipping it, advances the queue. Passing calendar days does not advance it. Program previews cannot start future sessions ahead of the queue.
 
-The user's revised pairings apply to both volume weeks:
+## Training weeks and per-lift adjustments
 
-| Day       | First lift             | Second lift         |
-| --------- | ---------------------- | ------------------- |
-| Monday    | Deadlift 5×3 at 85% TM | —                   |
-| Tuesday   | Squat 3×6 at 70% TM    | Bench 3×6 at 70% TM |
-| Wednesday | Squat 4×5 at 75% TM    | Bench 4×5 at 75% TM |
-| Thursday  | Deadlift 3×6 at 70% TM | Bench 5×3 at 85% TM |
-| Friday    | Squat 4×4 at 80% TM    | Bench 4×4 at 80% TM |
-| Saturday  | Squat 5×3 at 85% TM    | —                   |
-| Sunday    | Rest                   | —                   |
+Each of the six training weeks has these six workouts:
 
-Thursday takes the bench prescription from the heaviest squat day. Weekly reps remain 69 squat, 69 bench and 33 deadlift. Week 2 still adds 5 lb after rounding for squat/bench only; peak/taper percentages, sets and reps and the meet prescriptions are unchanged.
+| Workout | First lift | Second lift |
+| ------- | ---------- | ----------- |
+| 1 | Deadlift 5×3 at 85% TM | — |
+| 2 | Squat 3×6 at 70% TM | Bench 3×6 at 70% TM |
+| 3 | Squat 4×5 at 75% TM | Bench 4×5 at 75% TM |
+| 4 | Deadlift 3×6 at 70% TM | Bench 5×3 at 85% TM |
+| 5 | Squat 4×4 at 80% TM | Bench 4×4 at 80% TM |
+| 6 | Squat 5×3 at 85% TM | — |
 
-Calculated pound targets then round **up** to totals loadable with a 45 lb bar and 5 lb plates, without 2.5 lb plates: 265, 275, 285 lb, and so on. For example, 270 becomes 275 lb and 275 stays 275 lb. This final plate rounding follows the existing calculation increment and Week 2 offset, so adjacent prescriptions can share a loadable total. Kilogram calculations, confirmed training maxes, manually entered actual weights, saved workout targets and queued uploads stay unchanged.
+Weekly prescribed reps remain 69 squat, 69 bench and 33 deadlift. Aim for six workouts per training week and rest between weeks. After the final Cycle 1 workout is finished or explicitly skipped, Cycle 2 remains unavailable for 168 hours. The recovery screen shows the remaining time; there are no fixed start/end dates for the overall plan.
 
-The Program screen previews the future changed dates and calculated targets. Unstarted days in a volume week containing an original-layout target snapshot retain the original pairings, preventing duplicated moved work or silent changes to an active session. Saved days display their own original or revised targets, including after a backup import combines layouts. Untouched weeks use the revised pairings. Saved weights, actual sets, timestamps and outbox revisions remain intact.
+Before each new, untouched week after Cycle 1 week 1, the app asks **separately for squat, bench and deadlift** how the previous week felt:
+
+| Feeling | Change to that lift’s weekly offset |
+| ------- | ----------------------------------- |
+| Easy | +15 lb |
+| Good | +10 lb |
+| Decent | +5 lb |
+| OK | 0 lb |
+| Hard | −5 lb |
+
+Adjustments accumulate from the previous week and continue into Cycle 2 after the recovery week. Every choice previews the first prescription’s resulting weight before confirmation. No default rating is selected. Confirmed TMs stay unchanged; a saved weekly review stores its three ratings, cumulative per-lift offsets and confirmation timestamp. Started weeks retain their own loading rules, including original +5 lb squat/bench offsets for an already-started legacy week 2.
+
+Calculated pound targets round **up** to totals loadable with a 45 lb bar and 5 lb plates: 265, 275, 285 lb, and so on. For example, 270 becomes 275 lb. A weekly offset is added after percentage/increment rounding and before final plate rounding, so an offset change does not always equal the change in a loaded total. Kilogram targets convert the physical pound adjustment. Saved target snapshots and queued uploads are never recalculated.
 
 ## Use
 
-- Start on Today. Initial calibration sessions require actual loading and achieved RPE; no confirmed TMs or example workouts are seeded.
-- In Settings, enter a calibration single already performed, or log it during the calibration workout and explicitly confirm it as a TM. TMs are the actual lifted weights, not estimated maxes. Peak results do not change them.
-- The Program view includes every phase and rest day, the exact lift order and working prescriptions, and future calculated weights. Volume weeks use six lifting days; peak/taper do not.
-- Log complete, failed or skipped sets. Failed reps are actual reps; skipped reps are zero. Planned target snapshots remain separate from editable actual records. Undo, notes/discomfort and separate warm-ups are available.
-- Every logging action commits to account-scoped IndexedDB. Saved status appears after commit. Resume after reload, and use the timestamp-based rest timer offline. One tab at a time owns editing to prevent stale tabs overwriting durable state; another tab can review history and retry ownership after the editor closes.
-- TM changes and preference restoration from a backup preview future unstarted prescriptions; existing targets remain unchanged. JSON export/import rejects malformed, oversized and foreign-account backups, skips duplicates and preserves local conflicts.
-- Meet day supplies three slots per lift, independent official units and good/no-lift/not-taken outcomes. The total stays unavailable until all three lifts have a successful attempt. Meet attempts are local and included in backups.
+- Start on Next workout. Confirm existing calibration results in Settings or log and confirm actual calibration singles.
+- The Program view shows both cycles in order, each week’s prescriptions, saved targets and the recovery break. Future weeks await their per-lift check-in before displaying final weights.
+- Log complete, failed or skipped sets. Failed reps are actual reps; skipped reps are zero. Planned snapshots remain separate from editable actual records. Undo, notes/discomfort and separate warm-ups remain available.
+- Every logging action commits to account-scoped IndexedDB. Resume after reload and use the rest timer offline. One tab at a time owns editing; another tab can review history and retry ownership after the editor closes.
+- TM changes and imported preferences preview unstarted prescriptions, without altering saved targets. JSON backups include weekly check-ins and pending uploads. Malformed, oversized and foreign-account backups are rejected; duplicate program positions and conflicting reviews retain the local record.
 
 ## Powerlevel
 
@@ -82,10 +91,8 @@ See [integration documentation](docs/powerlevel-integration.md) for the live dep
 
 ## Verification
 
-Final checks: 115 automated tests, type checking and the Pages-path production build pass; 23 production browser tests pass with one intentional desktop skip for the phone-only size test. The existing relay passed 15 tests, and the updated Powerlevel dashboard passed 113 tests/build before publication.
+Run `npm test`, `BASE_PATH=/smolov-sbd/ npm run build` and `BASE_PATH=/smolov-sbd/ TEST_BASE_PATH=/smolov-sbd/ npm run e2e` to check the deployed shape.
 
-The automated suite covers the exact schedule/order/reps; calculation increments, Week 2 offsets and final pound rounding without 2.5 lb plates; RPE restrictions; null default TMs; snapshot integrity; timezone/DST; actual logging/edit/undo/failure/skip; warm-ups; IndexedDB failure/reopen/account separation; conservative backups; rest timers; conditional sync/revisions/concurrent writers/authentication/ambiguous reconciliation; and mixed-unit meet totals.
+Unit tests cover the 36-session sequence, exact lift order/reps, independent and cumulative per-lift adjustments, review gates, exact 168-hour recovery, actual activity dates, legacy history/layout compatibility, plate rounding, snapshot integrity, storage/account separation, conservative backups, outbox revisions and sync reconciliation. The legacy meet-result helpers remain covered for saved data compatibility.
 
-Browser checks exercise the production UI on desktop and phones: calibration/TMs → workout → actual set edits, failed/skipped sets and undo → refresh/resume → timer recovery → offline finish → offline new-tab reopen → reconnect and honest sync state → backup duplicates/preferences → meet attempts. Test accounts/requests are isolated, and no successful live account upload is asserted.
-
-Physical iPhone/Android installation, notification behavior (not required), and a real personal-account upload have not been tested. The existing R2 conditional-write semantics were tested using injected storage and checked against Cloudflare documentation; live workout writes were intentionally excluded.
+Production browser checks use isolated desktop and phone contexts, block external origins, and exercise weekly check-ins, next-workout progression, saved history, offline logging/reopen, actual-set editing, rest timers, backup restoration, account isolation and the recovery boundary. No synthetic workouts are submitted to live accounts. Physical-device installation and a real personal-account upload remain outside the automated checks.

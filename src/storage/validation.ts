@@ -290,12 +290,14 @@ function validateWorkout(
       "sync",
       "accountId",
     ],
-    ["finishedAt", "source"],
+    ["finishedAt", "source", "programSessionId"],
   );
   id(workout.id, `${path}.id`);
   id(workout.accountId, `${path}.accountId`);
   if (accountId !== undefined && workout.accountId !== accountId)
     fail(`${path}.accountId`, "belongs to a different account");
+  if (workout.programSessionId !== undefined)
+    id(workout.programSessionId, `${path}.programSessionId`);
   dateOnly(workout.date, `${path}.date`);
   timestamp(workout.startedAt, `${path}.startedAt`);
   timestamp(workout.updatedAt, `${path}.updatedAt`);
@@ -380,14 +382,12 @@ export function validateAppState(
   accountId?: string,
 ): asserts value is AppState {
   if (accountId !== undefined) validateAccountId(accountId);
-  const state = record(value, "state", [
-    "schemaVersion",
-    "settings",
-    "workouts",
-    "timerEnd",
-    "meet",
-    "outbox",
-  ]);
+  const state = record(
+    value,
+    "state",
+    ["schemaVersion", "settings", "workouts", "timerEnd", "meet", "outbox"],
+    ["weekReviews"],
+  );
   if (state.schemaVersion !== SCHEMA_VERSION)
     fail(
       "state.schemaVersion",
@@ -431,6 +431,13 @@ export function validateAppState(
     validateWorkout(workout, `state.workouts[${i}]`, accountId),
   );
   unique(workouts, (item) => String(item.id), "state.workouts");
+  unique(
+    workouts.filter(
+      (workout) => (workout as Workout).programSessionId !== undefined,
+    ),
+    (item) => String(item.programSessionId),
+    "state.workouts.programSessionId",
+  );
   const workoutMap = new Map(
     (workouts as Workout[]).map((workout) => [workout.id, workout]),
   );
@@ -544,6 +551,35 @@ export function validateAppState(
     (item) => `${item.accountId}:${item.workoutId}:${item.revision}`,
     "state.outbox",
   );
+  if (state.weekReviews !== undefined) {
+    const reviews = array(state.weekReviews, "state.weekReviews", 6);
+    reviews.forEach((value, i) => {
+      const path = `state.weekReviews[${i}]`;
+      const review = record(value, path, [
+        "weekId", "feelings", "offsetsLb", "reviewedAt",
+      ]);
+      if (
+        typeof review.weekId !== "string" ||
+        !/^cycle-[12]:week-[123]$/.test(review.weekId)
+      )
+        fail(
+          `${path}.weekId`,
+          "must identify a week in the two three-week cycles",
+        );
+      const feelings = record(review.feelings, `${path}.feelings`, LIFTS);
+      const offsets = record(review.offsetsLb, `${path}.offsetsLb`, LIFTS);
+      for (const lift of LIFTS) {
+        choice(
+          feelings[lift],
+          ["easy", "good", "decent", "ok", "hard"],
+          `${path}.feelings.${lift}`,
+        );
+        number(offsets[lift], `${path}.offsetsLb.${lift}`, -100_000, 100_000);
+      }
+      timestamp(review.reviewedAt, `${path}.reviewedAt`);
+    });
+    unique(reviews, (item) => String(item.weekId), "state.weekReviews");
+  }
 }
 
 /** Future migration cases must transform a copy, validate it, then save atomically. */

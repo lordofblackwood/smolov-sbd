@@ -12,7 +12,7 @@ import type {
   Workout,
 } from "./types";
 
-export const PROGRAM_NAME = "Modified Smolov Jr. — SBD Meet Prep";
+export const PROGRAM_NAME = "Modified Smolov Jr. — SBD Training Cycles";
 export const MEET_DATE = "2026-11-15";
 export const TIME_ZONE = "America/New_York";
 export const LIFTS: readonly Lift[] = ["squat", "bench", "deadlift"];
@@ -424,7 +424,7 @@ export function formatRule(
   block: Pick<Block, "percent" | "offsetLb" | "rpeTarget" | "kind">,
 ): string {
   if (block.percent !== undefined)
-    return `${block.percent}% TM${block.offsetLb ? ` + ${block.offsetLb} lb` : ""}`;
+    return `${block.percent}% TM${block.offsetLb ? ` ${block.offsetLb < 0 ? "−" : "+"} ${Math.abs(block.offsetLb)} lb` : ""}`;
   if (block.kind === "calibration")
     return `Calibration single · RPE ${block.rpeTarget}`;
   if (block.kind === "final-single")
@@ -445,7 +445,7 @@ export function calculateWorkingWeight(
     (tmLb * block.percent) / 100,
     incrementLb,
   );
-  const prescribedLb = baselineLb + (block.offsetLb ?? 0);
+  const prescribedLb = Math.max(0, baselineLb + (block.offsetLb ?? 0));
   return settings.unit === "lb"
     ? roundUpToLoadablePounds(prescribedLb)
     : convertWeight(prescribedLb, "lb", settings.unit);
@@ -500,6 +500,14 @@ export function startWorkout(
     );
   if (!programDay.blocks.length)
     throw new Error("This day has no prescribed workout.");
+  const targets = createTargets(programDay, settings);
+  const nonpositive = targets.find(
+    (target) => target.weight !== null && target.weight <= 0,
+  );
+  if (nonpositive)
+    throw new Error(
+      `${LIFT_LABELS[nonpositive.lift]} has a zero-weight target. Choose a smaller weekly adjustment or review its training max before starting this workout.`,
+    );
   return {
     id: identity(),
     revision: 0,
@@ -507,7 +515,7 @@ export function startWorkout(
     startedAt: now.toISOString(),
     updatedAt: now.toISOString(),
     status: "active",
-    targets: createTargets(programDay, settings),
+    targets,
     sets: [],
     notes: "",
     sync: { status: "local" },

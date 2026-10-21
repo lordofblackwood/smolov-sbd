@@ -1,4 +1,10 @@
-import type { MeetAttempt, Settings, Unit, Workout } from "../domain/types";
+import type {
+  MeetAttempt,
+  Settings,
+  Unit,
+  WeekReview,
+  Workout,
+} from "../domain/types";
 
 export const SCHEMA_VERSION = 1 as const;
 export const LOCAL_ACCOUNT_ID = "local-unpaired";
@@ -26,6 +32,8 @@ export interface AppState {
   timerEnd: number | null;
   meet: { unit: Unit; attempts: MeetAttempt[] };
   outbox: OutboxEntry[];
+  /** Absent in original backups; saved reviews follow the account's workouts. */
+  weekReviews?: WeekReview[];
 }
 
 export function createInitialState(settings: Settings): AppState {

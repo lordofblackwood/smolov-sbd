@@ -5,12 +5,10 @@ import {
   confirmCalibrationTrainingMax,
   finishWorkout,
   formatDate,
-  getProgramDay,
-  skipWorkout,
-  startWorkout,
   todayDate,
 } from "./domain/program";
-import type { Lift, TrainingMax, Workout as WorkoutType } from "./domain/types";
+import { nextTrainingStep, trainingSessions, workoutForSession, startSession, skipSession, programSessionIdForWorkout, type TrainingSession } from "./domain/sequence";
+import type { Lift, TrainingMax, WeekReview, Workout as WorkoutType } from "./domain/types";
 import {
   createInitialState,
   LOCAL_ACCOUNT_ID,
@@ -31,13 +29,12 @@ import {
 import { useWriterLock } from "./storage/useWriterLock";
 import { Icon } from "./components/Icon";
 import { Modal } from "./components/Modal";
-import { ScheduleRevision } from "./components/ScheduleRevision";
+import { WeekCheckIn } from "./components/WeekCheckIn";
 import { Today } from "./screens/Today";
 import { Program } from "./screens/Program";
 import { History } from "./screens/History";
 import { Settings, TmReview } from "./screens/Settings";
 import { Workout } from "./screens/Workout";
-import { Meet } from "./screens/Meet";
 type Page = "today" | "program" | "history" | "settings";
 const CONNECTION_KEY = "smolov-sbd-connection-v1";
 function savedConnection(): Connection | null {
@@ -68,9 +65,9 @@ export default function App() {
   const [saveError, setSaveError] = useState("");
   const [saveStatus, setSaveStatus] = useState("Opening local storage…");
   const [page, setPage] = useState<Page>("today");
-  const [selectedDate, setSelectedDate] = useState(todayDate());
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => new Date());
   const [workoutId, setWorkoutId] = useState<string | null>(null);
-  const [meetOpen, setMeetOpen] = useState(false);
   const [tmReview, setTmReview] = useState<{
     lift: Lift;
     initial?: TrainingMax;
@@ -290,9 +287,8 @@ export default function App() {
   const navigate = (next: Page) => {
     setPage(next);
     setWorkoutId(null);
-    setMeetOpen(false);
     setNotice("");
-    if (next === "today") setSelectedDate(todayDate());
+    if (next === "today") setSelectedSessionId(null);
     window.scrollTo(0, 0);
   };
   const pair = async (code: string, adopt: boolean) => {
@@ -308,11 +304,18 @@ export default function App() {
     let next =
       (await loadAppState(nextConnection.accountId)) ??
       createInitialState(local?.settings ?? DEFAULT_SETTINGS);
+    let adoptionConflicts = 0;
     if (adopt && local && accountRef.current === LOCAL_ACCOUNT_ID) {
       const existing = new Set(next.workouts.map((w) => w.id));
       for (const record of local.workouts) {
         if (existing.has(record.id) || record.sync.status === "synced")
           continue;
+        const sessionId = programSessionIdForWorkout(record, local.workouts);
+        if (sessionId && next.workouts.some(saved =>
+          (saved.programSessionId || record.programSessionId) && programSessionIdForWorkout(saved, next.workouts) === sessionId)) {
+          adoptionConflicts++;
+          continue;
+        }
         const moved = {
           ...structuredClone(record),
           accountId: nextConnection.accountId,
@@ -323,13 +326,19 @@ export default function App() {
           next = enqueueWorkout(next, moved, { status: "pending" });
       }
     }
+    if (adopt && local && accountRef.current === LOCAL_ACCOUNT_ID) {
+      const existingReviews = new Set(next.weekReviews?.map(review => review.weekId));
+      const adoptedReviews = (local.weekReviews ?? []).filter(review => !existingReviews.has(review.weekId));
+      if (adoptedReviews.length) next = { ...next, weekReviews: [...(next.weekReviews ?? []), ...structuredClone(adoptedReviews)] };
+    }
     await saveAppState(next, nextConnection.accountId);
     localStorage.setItem(CONNECTION_KEY, JSON.stringify(nextConnection));
+    if (adoptionConflicts) setNotice(`${adoptionConflicts} overlapping workouts remain in unpaired storage. Your existing account workouts were kept.`);
     setConnection(nextConnection);
     setUploadReady(false);
     setSyncStatus("");
     setConnectionStatus(
-      "Paired locally. Checking the dedicated Smolov source before uploading.",
+      `Paired locally. Checking the dedicated Smolov source before uploading.${adoptionConflicts ? ` ${adoptionConflicts} overlapping workouts remain in unpaired storage; existing account records were kept.` : ""}`,
     );
   };
   const disconnect = async () => {
@@ -393,34 +402,36 @@ export default function App() {
       void saved.then(() => retrySync()).catch(() => undefined);
   };
   const begin = () => {
-    if (!state || !day) return;
-    const existing = state.workouts.find((w) => w.date === selectedDate);
-    if (existing) {
-      setWorkoutId(existing.id);
-      return;
-    }
-    const active = state.workouts.find((w) => w.status === "active");
-    if (active) {
-      setWorkoutId(active.id);
-      setNotice(
-        "Resuming your existing workout. Finish or stop it before starting another.",
-      );
-      return;
-    }
+    const current = stateRef.current;
+    if (!current || !session) return;
+    const existing = workoutForSession(session, current.workouts) ?? (step?.kind === "workout" && step.session.id === session.id ? step.workout : undefined);
+    if (existing) { setWorkoutId(existing.id); return; }
+    const active = current.workouts.find(w => w.status === "active");
+    if (active) { setWorkoutId(active.id); return; }
+    const currentStep = nextTrainingStep(current.workouts, current.settings, new Date(), current.weekReviews);
+    if (currentStep.kind !== "workout" || currentStep.session.id !== session.id) return;
     try {
-      const next = startWorkout(day, state.settings, accountId);
-      mutate((s) => ({ ...s, workouts: [...s.workouts, next] }));
+      const next = startSession(session, current.settings, accountId);
+      mutate(s => ({ ...s, workouts: [...s.workouts, next] }));
       setWorkoutId(next.id);
       window.scrollTo(0, 0);
-    } catch (e) {
-      setNotice((e as Error).message);
-    }
+    } catch (e) { setNotice((e as Error).message); }
+  };
+  const confirmWeek = (review: WeekReview) => {
+    mutate(current => {
+      const currentStep = nextTrainingStep(current.workouts, current.settings, new Date(), current.weekReviews);
+      if (currentStep.kind !== "review" || currentStep.weekId !== review.weekId) throw Error("This week's check-in is already saved. Return to your next workout.");
+      return { ...current, weekReviews: [...(current.weekReviews ?? []), review] };
+    });
+    setSelectedSessionId(null);
   };
   const finish = () => {
     if (!workout) return;
     saveWorkout(finishWorkout(workout));
     setWorkoutId(null);
-    setPage("history");
+    setSelectedSessionId(null);
+    setPage("today");
+    setNow(new Date());
     window.scrollTo(0, 0);
   };
   const saveTm = (next: TrainingMax) => {
@@ -437,10 +448,20 @@ export default function App() {
       "Training max confirmed. Future unstarted prescriptions updated; saved workout targets are preserved.",
     );
   };
-  const day = getProgramDay(selectedDate, state?.workouts ?? []);
-  const workout = state?.workouts.find((w) => w.id === workoutId);
-  const dayWorkout = state?.workouts.find((w) => w.date === selectedDate);
-  const active = state?.workouts.some((w) => w.status === "active") ?? false;
+  const step = state ? nextTrainingStep(state.workouts, state.settings, now, state.weekReviews) : null;
+  const sessions = state ? trainingSessions(state.workouts, state.settings, state.weekReviews) : [];
+  const session: TrainingSession | undefined = selectedSessionId
+    ? sessions.find(item => item.id === selectedSessionId)
+    : step?.kind === "workout" ? step.session : undefined;
+  const workout = state?.workouts.find(w => w.id === workoutId);
+  const dayWorkout = session ? workoutForSession(session, state?.workouts ?? []) ?? (step?.kind === "workout" && step.session.id === session.id ? step.workout : undefined) : undefined;
+  const active = state?.workouts.some(w => w.status === "active") ?? false;
+  useEffect(() => {
+    const refresh = () => setNow(new Date());
+    const interval = setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => { clearInterval(interval); window.removeEventListener("focus", refresh); };
+  }, []);
   if (loadError)
     return (
       <main className="loading">
@@ -473,7 +494,7 @@ export default function App() {
           <span>SMOLOV / SBD</span>
         </div>
         <span className="header-date">
-          {formatDate(workout?.date ?? selectedDate, {
+          {formatDate(workout ? todayDate(new Date(workout.startedAt)) : todayDate(now), {
             weekday: "short",
             month: "short",
             day: "numeric",
@@ -491,11 +512,11 @@ export default function App() {
             onClick={() => navigate(p)}
           >
             <Icon name={p} />
-            {p[0].toUpperCase() + p.slice(1)}
+            {p === "today" ? "Next workout" : p[0].toUpperCase() + p.slice(1)}
           </button>
         ))}
         <div className="nav-foot">
-          <strong>Meet prep, kept simple.</strong>November 15, 2026
+          <strong>One workout at a time.</strong>3 weeks · 1 week off · 3 weeks
           <br />
           New York time
           <br />
@@ -503,12 +524,6 @@ export default function App() {
         </div>
       </nav>
       <main className="app-main">
-        {page === "program" && !workout && !meetOpen ? (
-          <ScheduleRevision
-            workouts={state.workouts}
-            settings={state.settings}
-          />
-        ) : null}
         {!canWrite ? (
           <div className="app-alert" role="status">
             {writer.message}
@@ -577,67 +592,17 @@ export default function App() {
             </button>
           </div>
         ) : null}
-        {page === "today" &&
-        !workout &&
-        state.workouts.some(
-          (w) => w.status === "active" && w.date !== selectedDate,
-        ) ? (
-          <div className="app-alert">
-            <span>
-              Your{" "}
-              {formatDate(
-                state.workouts.find((w) => w.status === "active")!.date,
-                { month: "short", day: "numeric" },
-              )}{" "}
-              workout is in progress.
-            </span>
-            <button
-              className="text-button"
-              onClick={() =>
-                setWorkoutId(
-                  state.workouts.find((w) => w.status === "active")!.id,
-                )
-              }
-            >
-              Resume workout
-            </button>
-          </div>
-        ) : null}
-        {selectedDate !== todayDate() && page === "today" && !workout ? (
-          <div className="day-picker">
-            <span>
-              Viewing{" "}
-              {formatDate(selectedDate, { month: "short", day: "numeric" })} ·
-              scheduled date stays fixed
-            </span>
-            <button
-              className="text-button"
-              onClick={() => setSelectedDate(todayDate())}
-            >
-              Today
-            </button>
-          </div>
-        ) : null}
         <fieldset
           className="screen-fieldset"
           disabled={
             !canWrite &&
             (Boolean(workout) ||
-              meetOpen ||
               (page !== "program" && page !== "history"))
           }
         >
-          {meetOpen ? (
-            <Meet
-              meet={state.meet}
-              onChange={(m) => mutate((s) => ({ ...s, meet: m }))}
-              onBack={() => {
-                setMeetOpen(false);
-                setPage("program");
-              }}
-            />
-          ) : workout ? (
+          {workout ? (
             <Workout
+              key={workout.id}
               workout={workout}
               settings={state.settings}
               timerEnd={state.timerEnd}
@@ -660,31 +625,21 @@ export default function App() {
               }}
               saveStatus={saveStatus}
             />
-          ) : page === "today" ? (
-            <Today
-              day={day}
-              settings={state.settings}
-              workout={dayWorkout}
-              onStart={begin}
-              onSettings={() => navigate("settings")}
-              onProgram={() => navigate("program")}
-              onSkip={() => setSkipConfirm(true)}
-              onMeet={() => setMeetOpen(true)}
-              saveStatus={saveStatus}
-              paired={Boolean(connection)}
-              uploadReady={uploadReady}
+          ) : page === "today" && step ? (
+            step.kind === "review" && !selectedSessionId ? (
+              <WeekCheckIn key={step.weekId} weekId={step.weekId} session={step.session}
+                previousOffsetsLb={step.previousOffsetsLb} sessions={sessions} settings={state.settings}
+                onConfirm={confirmWeek} onProgram={() => navigate("program")} />
+            ) : <Today
+              session={session} step={step} settings={state.settings} workout={dayWorkout}
+              canStart={step.kind === "workout" && step.session.id === session?.id}
+              onStart={begin} onSettings={() => navigate("settings")} onProgram={() => navigate("program")}
+              onSkip={() => setSkipConfirm(true)} onNext={() => navigate("today")}
+              saveStatus={saveStatus} paired={Boolean(connection)} uploadReady={uploadReady}
             />
           ) : page === "program" ? (
-            <Program
-              settings={state.settings}
-              workouts={state.workouts}
-              onDay={(date) => {
-                setSelectedDate(date);
-                setPage("today");
-                if (date === "2026-11-15") setMeetOpen(true);
-                window.scrollTo(0, 0);
-              }}
-            />
+            <Program settings={state.settings} workouts={state.workouts} weekReviews={state.weekReviews}
+              onDay={id => { setSelectedSessionId(id); setPage("today"); window.scrollTo(0, 0); }} />
           ) : page === "history" ? (
             <History
               canEdit={canWrite}
@@ -720,23 +675,27 @@ export default function App() {
             initial={tmReview.initial}
             settings={state.settings}
             workouts={state.workouts}
+            weekReviews={state.weekReviews}
             onClose={() => setTmReview(null)}
             onSave={saveTm}
           />
         ) : null}
-        {skipConfirm && day ? (
+        {skipConfirm && session ? (
           <Modal
             title="Skip this workout"
             onClose={() => setSkipConfirm(false)}
           >
             <p>
-              The session stays on {formatDate(day.date)}. No sets are logged
-              and no make-up work is added.
+              This marks {session.label} as skipped and advances to the next workout. No performed sets are added.
             </p>
             <button
               className="primary"
               onClick={() => {
-                const next = skipWorkout(day, state.settings, accountId);
+                const current = stateRef.current;
+                if (!current) return;
+                const currentStep = nextTrainingStep(current.workouts, current.settings, new Date(), current.weekReviews);
+                if (currentStep.kind !== "workout" || currentStep.session.id !== session.id || workoutForSession(session, current.workouts)) { setSkipConfirm(false); return; }
+                const next = skipSession(session, current.settings, accountId);
                 const saved = mutate((s) =>
                   enqueueWorkout(
                     { ...s, workouts: [...s.workouts, next] },
@@ -745,6 +704,8 @@ export default function App() {
                   ),
                 );
                 setSkipConfirm(false);
+                setSelectedSessionId(null);
+                setNow(new Date());
                 void saved.then(() => retrySync()).catch(() => undefined);
               }}
             >

@@ -7,6 +7,10 @@ import {
 } from "../domain/program";
 import { weightText } from "../ui";
 import { Icon } from "../components/Icon";
+const sequenceLabel = (id?: string) => {
+  const match = /^cycle-([12]):week-([123]):session-([1-6])$/.exec(id ?? "");
+  return match ? `Cycle ${match[1]} · Week ${match[2]} · Workout ${match[3]}` : id?.startsWith("calibration:") ? "Initial calibration" : null;
+};
 export function History({
   workouts,
   onOpen,
@@ -77,13 +81,14 @@ export function History({
                       timeZone: "America/New_York",
                     })}{" "}
                     · New York
-                    {todayDate(new Date(w.startedAt)) !== w.date
+                    {!w.programSessionId && todayDate(new Date(w.startedAt)) !== w.date
                       ? ` · Scheduled ${formatDate(w.date, { month: "short", day: "numeric" })}`
                       : ""}
                   </p>
                 </div>
                 <span className={"status " + w.status}>{w.status}</span>
               </div>
+              {sequenceLabel(w.programSessionId) ? <p className="muted small">{sequenceLabel(w.programSessionId)}</p> : null}
               <p>
                 {s.completedSets} complete · {s.failedSets} failed ·{" "}
                 {s.skippedSets} skipped

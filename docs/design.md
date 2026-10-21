@@ -1,3 +1,13 @@
+# Current training sequence
+
+The current product follows the user’s October 21 revision: next-workout navigation, two three-week cycles separated by seven full days off, and an independent squat/bench/deadlift check-in before every new week. Ratings adjust each lift’s cumulative weekly offset by +15/+10/+5/0/−5 lb for easy/good/decent/OK/hard. There is no active meet countdown or date-based calendar. Saved dates and historical targets remain part of history and backups.
+
+The dark navy, lime and violet palette, Inter/Barlow Condensed typography, ordered prescriptions, actual-set logging and desktop sidebar/mobile navigation are retained. The main timeline now has Cycle 1 → Recovery → Cycle 2. Program shows workouts in order and awaits a weekly check-in before displaying final future weights. The check-in previews each lift’s first resulting load before confirmation. Existing plate-rounding rules apply.
+
+The historical design notes below describe the original meet-prep implementation and its visual references, rather than the current navigation or timing rules.
+
+---
+
 # Design and browser verification
 
 The concept is the complete two-screen phone mockup `exec-9ab2df22-b546-48c4-80a4-304d6f09c16e.png`, generated in this chat before frontend coding. It remains a design reference outside the application bundle. The product follows the real Powerlevel design specification read from `Gamify Gym/docs/design.md`.

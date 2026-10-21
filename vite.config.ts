@@ -12,9 +12,9 @@ export default defineConfig({
       includeAssets: ["icons/*.png", "icon.svg"],
       manifest: {
         id: `${base}smolov-sbd`,
-        name: "Smolov SBD · Meet Prep",
+        name: "Smolov SBD · Training Cycles",
         short_name: "Smolov SBD",
-        description: "Modified Smolov Jr. — SBD Meet Prep",
+        description: "Modified Smolov Jr. — SBD Training Cycles",
         start_url: base,
         scope: base,
         display: "standalone",
